@@ -1,110 +1,95 @@
 # Nucleus
 
-> 由多智能体驱动的应用生成平台 —— 一句话描述想法，团队化的 AI 智能体协作产出可运行、可预览、可发布的网页应用。
+> 描述一个想法，AI 智能体团队为你规划、构建并交付一个真正可运行的网页应用。
 
-**当前状态：🚧 开发中（S0 工程基线）**
+Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注册，输入一句需求即可看到 Iris（需求）、Bob（架构）、Alex（开发）和 Ray（检查）协作完成规划、代码生成、预览和版本保存。
 
----
+## 已实现功能
 
-## 这个项目想解决什么
-
-同类工具（Lovable / bolt.new / v0）都有一个共同的失败模式：**生成的应用「没报错，但长歪了」**——
-按钮溢出屏幕、文字重叠、对比度不足、移动端整个崩掉。运行时错误可以捕获，**视觉错误捕获不了**。
-
-Nucleus 的两个核心命题：
-
-| 命题 | 做法 |
-|---|---|
-| **让 Agent 能看见自己的产出** | 生成后自动双视口截图 → 作为图片回灌给视觉模型 → 自主发现视觉缺陷 → 修复 → 复检 |
-| **让用户能看见 Agent 的决策** | 每个文件可溯源到「哪个智能体、第几轮、依据哪条架构决策、为什么」 |
-
----
+- 一句话创建 HTML / CSS / JavaScript 三文件应用
+- OpenCode Go 模型真实调用，默认使用 `glm-5.2`
+- 智能体工作时间线和结构化产品计划
+- sandbox iframe 中的可交互实时预览
+- 桌面 / 手机预览切换和源码查看
+- 基于当前版本继续对话修改
+- 运行错误回传，并可一键交给 Ray 修复
+- Cloudflare D1 云端项目、消息和版本持久化
+- 全量版本快照、历史版本恢复
+- 公开发布页 `/p/[slug]`
+- ZIP 源码下载
+- 游客直接体验，无登录门槛
 
 ## 技术栈
 
-| 层 | 选型 |
+| 层 | 实现 |
 |---|---|
-| 框架 | Next.js 16（App Router）+ TypeScript |
-| 样式 | Tailwind CSS v4 |
-| 预览运行时 | esbuild-wasm + esm.sh + sandboxed iframe |
-| 模型 | Claude（`claude-opus-5`），含视觉评审能力 |
-| 数据 | Neon Postgres + Drizzle ORM |
-| 部署 | Vercel |
+| 应用 | React 19 + Vinext App Router + TypeScript |
+| 样式 | 原生 CSS，响应式工作台 |
+| AI | OpenCode Go 的 OpenAI-compatible API |
+| 数据 | Cloudflare D1 + SQLite schema / migrations |
+| 预览 | 三文件虚拟项目 + sandboxed iframe + runtime bridge |
+| 部署 | OpenAI Sites / Cloudflare Worker |
 
----
+## 本地运行
 
-## 本地启动
+环境要求：Node.js 22.13+、pnpm 11。
 
 ```bash
 pnpm install
-cp .env.example .env.local   # 填入下方环境变量
+copy .env.example .env.local
 pnpm dev
 ```
 
-### 环境变量
+在 `.env.local` 中配置：
 
-| 变量 | 用途 | 必需 |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Claude API，**仅服务端使用** | ✅ |
-| `DATABASE_URL` | Neon Postgres 连接串 | ✅ |
-| `AUTH_SECRET` | Auth.js 会话加密（`openssl rand -base64 32`） | ✅ |
-| `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` | GitHub OAuth | 可选 |
-
-> ⚠️ 所有密钥仅在服务端读取，**不得加 `NEXT_PUBLIC_` 前缀**。
-
----
-
-## 项目结构
-
-```
-nucleus/
-├─ app/
-│  ├─ page.tsx              # 落地页
-│  ├─ w/[projectId]/        # 工作台
-│  ├─ p/[slug]/             # 公开发布页
-│  └─ api/
-│     ├─ agent/run/         # 主生成流（SSE）
-│     └─ agent/heal/        # 自愈闭环
-├─ components/
-├─ lib/
-│  ├─ agent/                # 工具定义、编排循环、事件协议
-│  ├─ runtime/              # 预览运行时（部分复用上游，见 THIRD_PARTY_NOTICES.md）
-│  ├─ store/                # 虚拟文件系统
-│  └─ db/                   # Drizzle schema
-└─ docs/                    # 设计文档、开发计划、进度记录
+```dotenv
+OPENCODE_GO_API_KEY=
+OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
+OPENCODE_GO_MODEL=glm-5.2
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
----
+密钥只在 Worker 服务端读取，不能添加 `NEXT_PUBLIC_` 前缀，也不能提交 `.env.local`。
 
-## 开源复用与自研范围
+## 验证
 
-本项目**复用了** [Nutlope/llamacoder](https://github.com/Nutlope/llamacoder)（MIT）的浏览器内预览运行时，
-完整声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+```bash
+pnpm test
+pnpm lint
+pnpm exec tsc --noEmit
+pnpm build
+```
 
-**本项目自研部分**：
+真实端到端验收还覆盖：创建项目、AI 生成 v1、继续修改生成 v2、恢复 v1/v2、发布公开页和生成代码语法检查。
 
-- 多智能体编排（规划 → 架构 → 编码 → 质检）与流式事件协议
-- 视觉自愈闭环（截图 → 视觉评审 → 修复 → 复检）
-- 决策溯源系统
-- 数据持久化、版本快照与回滚
-- 认证、游客体验、公开发布页
-- 全部 UI
+## 核心数据流
 
-> 选择复用而非重写运行时，是一个明确的工程取舍：把有限时间投入到差异化能力上，
-> 而不是重新调试一个已被验证的模块。详见 [docs/DESIGN.md](./docs/DESIGN.md)。
+```text
+用户需求
+  → 创建 Project / Message
+  → Iris 生成结构化计划
+  → Alex 生成带 path 的三个代码块
+  → 解析并与当前版本增量合并
+  → 写入 Version 全量快照
+  → 注入 CSS / runtime / JavaScript
+  → sandbox iframe 运行
+  → error / unhandledrejection 回传工作台
+```
 
----
+## 工程取舍
+
+本次交付把生成物限制为无构建步骤的前端三文件应用。相比在演示环境里启动任意 Node 容器，这个边界明显降低了冷启动、依赖安装和恶意代码风险，同时仍能覆盖表单、看板、计时器、数据面板和小游戏等高频场景。
+
+当前不支持生成后端、安装任意 npm 包或执行服务器代码。这是有意识的 MVP 范围，不是把静态截图当成功能。
 
 ## 文档
 
-| 文档 | 内容 |
-|---|---|
-| [docs/DESIGN.md](./docs/DESIGN.md) | 架构设计、模块详设、取舍清单、风险预案 |
-| [docs/DEV-PLAN.md](./docs/DEV-PLAN.md) | 分阶段开发计划与验收标准 |
-| [docs/PROGRESS.md](./docs/PROGRESS.md) | 逐阶段开发记录（做了什么、为什么、怎么验证） |
-
----
+- [架构与取舍](docs/DESIGN.md)
+- [开发进度与验收记录](docs/PROGRESS.md)
+- [提交说明](docs/SUBMISSION.md)
+- [后续开发计划](docs/DEV-PLAN.md)
+- [第三方说明](THIRD_PARTY_NOTICES.md)
 
 ## License
 
-MIT —— 见 [LICENSE](./LICENSE)
+MIT
