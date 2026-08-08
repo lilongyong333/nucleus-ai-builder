@@ -15,6 +15,7 @@
 | 发布与导出 | ✅ | `/p/[slug]`、公开链接、ZIP 下载 |
 | 质量验证 | ✅ | 测试、类型、lint、生产构建、真实 E2E |
 | 在线部署 | ✅ | 公网站点、D1、服务端密钥和真实生成均已验证 |
+| 公开源码 | ✅ | GitHub Public 仓库已推送，PDF 和密钥未入库 |
 
 ## API 与模型验证
 
@@ -79,6 +80,7 @@ Production      passed
 ## 正式线上验收
 
 - 站点：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+- 源码：https://github.com/lilongyong333/nucleus-ai-builder
 - 首页 HTTP 200，Nucleus 产品内容正常；
 - `/api/projects` HTTP 200，D1 migration 正常；
 - 线上创建“习惯打卡器”项目成功；
