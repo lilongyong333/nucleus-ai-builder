@@ -1,4 +1,4 @@
-import { getProject, markError, markGenerating, saveGeneration } from "@/lib/db";
+import { consumeGenerationQuota, getProject, markError, markGenerating, saveGeneration } from "@/lib/db";
 import { activeModel, buildApp, createPlan } from "@/lib/opencode";
 import type { AgentEvent } from "@/lib/types";
 
@@ -10,6 +10,10 @@ export async function POST(request: Request) {
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   if (!projectId || prompt.length < 3) return Response.json({ error: "项目和需求不能为空" }, { status: 400 });
+  const clientIdentifier = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip") ?? `unknown:${request.headers.get("user-agent") ?? "browser"}`;
+  if (!(await consumeGenerationQuota(clientIdentifier))) {
+    return Response.json({ error: "本小时生成次数已达上限，请稍后再试" }, { status: 429, headers: { "Retry-After": "3600" } });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({

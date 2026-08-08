@@ -21,6 +21,8 @@ export function ensureSchema(): Promise<void> {
       d1.prepare(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)`),
       d1.prepare(`CREATE INDEX IF NOT EXISTS idx_versions_project_created ON versions(project_id, created_at)`),
       d1.prepare(`CREATE INDEX IF NOT EXISTS idx_messages_project_created ON messages(project_id, created_at)`),
+      d1.prepare(`CREATE TABLE IF NOT EXISTS generation_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL)`),
+      d1.prepare(`CREATE INDEX IF NOT EXISTS idx_generation_limits_expires ON generation_limits(expires_at)`),
     ]).then(() => undefined).catch((error: unknown) => { schemaReady = null; throw error; });
     schemaReady = pending;
   }
@@ -134,4 +136,18 @@ export async function getPublishedProject(slug: string): Promise<Project | null>
   await ensureSchema();
   const row = await db().prepare(`SELECT * FROM projects WHERE slug=?`).bind(slug).first<D1Row>();
   return row ? projectFromRow(row) : null;
+}
+
+export async function consumeGenerationQuota(identifier: string, limit = 8): Promise<boolean> {
+  await ensureSchema();
+  const now = new Date();
+  const bucket = now.toISOString().slice(0, 13);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identifier));
+  const fingerprint = Array.from(new Uint8Array(digest)).slice(0, 12).map((value) => value.toString(16).padStart(2, "0")).join("");
+  const key = `${bucket}:${fingerprint}`;
+  const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+  const d1 = db();
+  await d1.prepare(`DELETE FROM generation_limits WHERE expires_at < ?`).bind(now.toISOString()).run();
+  const row = await d1.prepare(`INSERT INTO generation_limits (key,count,expires_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1 RETURNING count`).bind(key, expiresAt).first<{ count: number }>();
+  return Number(row?.count ?? limit + 1) <= limit;
 }

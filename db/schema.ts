@@ -30,3 +30,9 @@ export const messages = sqliteTable("messages", {
   content: text("content").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_messages_project_created").on(table.projectId, table.createdAt)]);
+
+export const generationLimits = sqliteTable("generation_limits", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull().default(0),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [index("idx_generation_limits_expires").on(table.expiresAt)]);
