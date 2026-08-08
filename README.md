@@ -4,6 +4,8 @@
 
 Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注册，输入一句需求即可看到 Iris（需求）、Bob（架构）、Alex（开发）和 Ray（检查）协作完成规划、代码生成、预览和版本保存。
 
+**在线体验：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+
 ## 已实现功能
 
 - 一句话创建 HTML / CSS / JavaScript 三文件应用
@@ -60,7 +62,7 @@ pnpm exec tsc --noEmit
 pnpm build
 ```
 
-真实端到端验收还覆盖：创建项目、AI 生成 v1、继续修改生成 v2、恢复 v1/v2、发布公开页和生成代码语法检查。
+真实端到端验收还覆盖：创建项目、AI 生成 v1、继续修改生成 v2、恢复 v1/v2、发布公开页和生成代码语法检查；同一条生成链路已在正式线上环境再次跑通。
 
 ## 核心数据流
 

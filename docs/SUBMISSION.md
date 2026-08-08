@@ -1,5 +1,9 @@
 # Nucleus — 笔试提交说明
 
+在线体验：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+
+已发布示例：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-c4fbb7
+
 ## 1. 我对题目的理解
 
 题目考查的不只是能否调用大模型，而是能否在有限时间内做出一条真实、稳定、可解释的产品闭环：生成结果能运行，项目能保存，评审人能继续修改并通过公开链接验证。

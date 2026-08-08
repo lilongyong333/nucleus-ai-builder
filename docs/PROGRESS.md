@@ -14,7 +14,7 @@
 | 版本系统 | ✅ | 自动快照、列表、恢复任意版本 |
 | 发布与导出 | ✅ | `/p/[slug]`、公开链接、ZIP 下载 |
 | 质量验证 | ✅ | 测试、类型、lint、生产构建、真实 E2E |
-| 在线部署 | 进行中 | 完成本地交付后发布到 Sites |
+| 在线部署 | ✅ | 公网站点、D1、服务端密钥和真实生成均已验证 |
 
 ## API 与模型验证
 
@@ -59,7 +59,7 @@
 ## 自动化结果
 
 ```text
-Vitest          5 / 5 passed
+Vitest          6 / 6 passed
 TypeScript      passed
 ESLint          passed
 Production      passed
@@ -73,6 +73,19 @@ Production      passed
 4. 增量修改偶尔只返回一个文件：与当前快照合并。
 5. sandbox opaque origin 无法直接访问 `localStorage`：注入内存兼容层。
 6. 旧 `.next` 类型污染 Vinext 类型检查：隔离旧构建产物，并让 ESLint 忽略 artifacts。
+7. 线上 Builder 偶发返回空内容：增加一次自动重试，并在 reasoning 中包含完整 artifact 时容错提取。
+8. 首轮生成偶发漏文件：检测缺失路径并发起一次定向补全，最终线上生成 13 个事件并成功保存 v1。
+
+## 正式线上验收
+
+- 站点：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+- 首页 HTTP 200，Nucleus 产品内容正常；
+- `/api/projects` HTTP 200，D1 migration 正常；
+- 线上创建“习惯打卡器”项目成功；
+- 线上生成 HTTP 200，13 个 NDJSON 事件，最终状态 `ready`；
+- `index.html`、`styles.css`、`script.js` 三文件齐全；
+- 线上 v1 版本写入成功；
+- 发布页 `/p/app-c4fbb7` HTTP 200，并包含全屏预览 iframe。
 
 ## 当前限制
 
