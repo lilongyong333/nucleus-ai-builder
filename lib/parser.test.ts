@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGeneratedReply } from "./parser";
+import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { starterFiles } from "./runtime";
 
 describe("model reply parser", () => {
@@ -16,5 +16,11 @@ describe("model reply parser", () => {
     const parsed = parseGeneratedReply(reply, "updated", starterFiles);
     expect(parsed.files["index.html"]).toBe(starterFiles["index.html"]);
     expect(parsed.files["script.js"]).toContain("updated");
+  });
+
+  it("reports which files were actually returned", () => {
+    const reply = `\`\`\`html{path=index.html}\n<main>Only HTML</main>\n\`\`\``;
+    const partial = extractGeneratedFiles(reply);
+    expect(Object.keys(partial)).toEqual(["index.html"]);
   });
 });

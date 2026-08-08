@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { parseGeneratedReply } from "./parser";
+import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import type { AgentPlan, GeneratedFiles } from "./types";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
@@ -72,5 +72,16 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
     { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
   ], 8000);
+  if (!currentFiles) {
+    const partial = extractGeneratedFiles(raw);
+    const missing = (["index.html", "styles.css", "script.js"] as const).filter((path) => !partial[path]);
+    if (missing.length > 0) {
+      const repair = await chat([
+        { role: "system", content: `You are repairing an incomplete artifact. Return only markdown code blocks for these missing files: ${missing.join(", ")}. Use the exact {path=filename} opening-line format. Do not repeat files that already exist. No reasoning.` },
+        { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nExisting generated files:\n${Object.entries(partial).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
+      ], 5000);
+      return parseGeneratedReply(`${raw}\n${repair}`, `完成 ${plan.appName}`);
+    }
+  }
   return parseGeneratedReply(raw, `完成 ${plan.appName}`, currentFiles);
 }
