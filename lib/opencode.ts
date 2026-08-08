@@ -18,19 +18,29 @@ async function chat(messages: ChatMessage[], maxTokens: number): Promise<string>
   const apiKey = runtimeValue("OPENCODE_GO_API_KEY");
   if (!apiKey) throw new Error("站点还没有配置 OpenCode Go API Key");
   const baseUrl = runtimeValue("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1").replace(/\/$/, "");
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: activeModel(), messages, max_tokens: maxTokens, stream: false }),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`模型调用失败（${response.status}）：${detail.slice(0, 180)}`);
+  let lastError = "模型返回了空内容";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const retryMessages = attempt === 0 ? messages : [...messages, { role: "user" as const, content: "The previous completion was empty. Output the requested final answer immediately, with no reasoning preface." }];
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: activeModel(), messages: retryMessages, max_tokens: maxTokens, stream: false }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      lastError = `模型调用失败（${response.status}）：${detail.slice(0, 180)}`;
+      if (response.status < 500) break;
+    } else {
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }> };
+      const message = data.choices?.[0]?.message;
+      const content = typeof message?.content === "string" ? message.content.trim() : "";
+      if (content) return content;
+      const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content : "";
+      if (reasoning.includes("```") || reasoning.includes("<summary>")) return reasoning;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
   }
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("模型返回了空内容");
-  return content;
+  throw new Error(lastError);
 }
 
 function parseObject<T>(text: string): T {
@@ -59,8 +69,8 @@ export async function createPlan(prompt: string, currentFiles?: GeneratedFiles):
 export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles): Promise<{ files: GeneratedFiles; summary: string }> {
   const existing = currentFiles ? `\nExisting files to improve:\n${Object.entries(currentFiles).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` : "";
   const raw = await chat([
-    { role: "system", content: `You are Alex, an elite frontend engineer. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup. Never place markdown fences inside a generated file.` },
+    { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
-  ], 6000);
+  ], 8000);
   return parseGeneratedReply(raw, `完成 ${plan.appName}`, currentFiles);
 }
