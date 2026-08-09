@@ -1,0 +1,84 @@
+import { expect, test } from "@playwright/test";
+import { starterFiles } from "../lib/runtime";
+import type { AppQualityReport, Project } from "../lib/types";
+
+const firstQuality: AppQualityReport = {
+  score: 92,
+  grade: "A",
+  passed: true,
+  checks: [{ id: "syntax", label: "JavaScript 语法", severity: "pass", detail: "通过", weight: 24 }],
+  summary: "Ray 完成检查",
+};
+
+const finalQuality: AppQualityReport = {
+  ...firstQuality,
+  score: 100,
+  checks: [
+    { id: "syntax", label: "JavaScript 语法", severity: "pass", detail: "通过", weight: 24 },
+    { id: "interaction", label: "真实交互", severity: "pass", detail: "通过", weight: 18 },
+  ],
+};
+
+function project(versionNumber = 1, quality = firstQuality): Project {
+  const versionId = `version-${versionNumber}`;
+  return {
+    id: "e2e-project",
+    title: "面试计划板",
+    prompt: "制作一个面试计划板",
+    status: "ready",
+    plan: { appName: "面试计划板", summary: "安排准备任务", features: ["新增任务", "完成筛选"], design: "清晰响应式界面" },
+    files: starterFiles,
+    currentVersionId: versionId,
+    publishedVersionId: versionNumber > 1 ? "version-1" : null,
+    slug: versionNumber > 1 ? "interview-board" : null,
+    createdAt: "2026-08-09T00:00:00.000Z",
+    updatedAt: "2026-08-09T00:01:00.000Z",
+    versions: [{ id: versionId, projectId: "e2e-project", versionNumber, files: starterFiles, summary: `版本 ${versionNumber}`, model: "test-model", quality, createdAt: "2026-08-09T00:01:00.000Z" }],
+  };
+}
+
+test("creates a project and opens the functional workbench", async ({ page }) => {
+  const initialProject = project();
+  await page.route("**/api/projects", async (route) => {
+    if (route.request().method() === "GET") await route.fulfill({ json: { projects: [] } });
+    else await route.fulfill({ status: 201, json: { project: initialProject } });
+  });
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /描述一个想法/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始构建" })).toBeVisible();
+  const promptInput = page.getByLabel("描述你想创建的应用");
+  await promptInput.fill("制作一个面试计划板");
+  await expect(promptInput).toHaveValue("制作一个面试计划板");
+  await expect(page.getByRole("button", { name: "开始构建" })).toBeEnabled();
+  await page.getByRole("button", { name: "开始构建" }).click();
+
+  await expect(page).toHaveURL(/\/w\/e2e-project$/);
+  await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
+  await expect(page.locator(".quality-score strong")).toHaveText("92");
+});
+
+test("renders streamed agent review and the completed version", async ({ page }) => {
+  const initialProject = project();
+  const completedProject = project(2, finalQuality);
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
+  await page.route("**/api/generate", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/x-ndjson; charset=utf-8",
+    body: [
+      JSON.stringify({ type: "status", agent: "Iris", title: "需求分析完成", detail: "2 个可验证功能", state: "done" }),
+      JSON.stringify({ type: "review", report: finalQuality }),
+      JSON.stringify({ type: "complete", project: completedProject }),
+    ].join("\n") + "\n",
+  }));
+
+  await page.goto("/w/e2e-project");
+  await page.getByPlaceholder("告诉团队你想修改什么…").fill("增加任务优先级");
+  await page.getByRole("button", { name: "发送修改需求" }).click();
+
+  await expect(page.locator(".quality-score strong")).toHaveText("100");
+  await expect(page.getByText("v2 已保存")).toBeVisible();
+  await page.locator(".topbar-actions button").filter({ hasText: "版本" }).click();
+  await expect(page.getByText("Ray 100/100")).toBeVisible();
+});
