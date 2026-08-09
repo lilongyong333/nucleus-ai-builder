@@ -1,10 +1,10 @@
 import { beginGeneration, consumeGenerationQuota, getProject, markError, recordGenerationEvent, releaseGeneration, saveGeneration, type GenerationMetrics } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity, type WorkspaceIdentity } from "@/lib/identity";
-import { activeModel, buildApp, createGenerationBudget, createPlan } from "@/lib/opencode";
+import { activeModel, buildApp, createGenerationBudget, createPlan, type GenerationProgress } from "@/lib/opencode";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, ModelUsage, Project } from "@/lib/types";
 
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const visitor = resolveVisitorSession(request);
@@ -42,20 +42,43 @@ export async function POST(request: Request) {
   const activeGenerationId = generationId;
   const budget = createGenerationBudget();
   const generationAbort = new AbortController();
-  request.signal.addEventListener("abort", () => generationAbort.abort(), { once: true });
+  let abortSource: "client" | "deadline" | null = null;
+  const abortGeneration = (source: "client" | "deadline", reason: DOMException) => {
+    if (generationAbort.signal.aborted) return;
+    abortSource = source;
+    generationAbort.abort(reason);
+  };
+  request.signal.addEventListener("abort", () => abortGeneration("client", new DOMException("Browser connection closed", "AbortError")), { once: true });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      const deadline = setTimeout(() => abortGeneration("deadline", new DOMException("Hosted generation deadline exceeded", "TimeoutError")), Math.max(1, 52_000 - (Date.now() - runStartedAt)));
       const heartbeat = setInterval(() => {
-        if (!generationAbort.signal.aborted) controller.enqueue(encoder.encode("\n"));
+        if (abortSource !== "client") controller.enqueue(encoder.encode("\n"));
       }, 8_000);
       let sequence = 0;
       let repairCount = 0;
+      let pendingProgress: (GenerationProgress & { delta: string }) | null = null;
+      let lastProgressAt = 0;
       const finalModel = () => budget.modelsUsed.join(" → ") || model;
       const metrics = (): GenerationMetrics => ({ usage: budget.usage, modelCalls: budget.calls, repairCount, durationMs: Date.now() - runStartedAt, model: finalModel() });
       const emit = (event: AgentEvent) => {
-        if (!generationAbort.signal.aborted) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        if (abortSource === "client") return;
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      const flushProgress = () => {
+        if (!pendingProgress) return;
+        emit({ type: "progress", ...pendingProgress });
+        pendingProgress = null;
+        lastProgressAt = Date.now();
+      };
+      const reportProgress = (progress: GenerationProgress) => {
+        if (pendingProgress && (pendingProgress.phase !== progress.phase || pendingProgress.model !== progress.model || progress.totalChars < pendingProgress.totalChars)) flushProgress();
+        pendingProgress = pendingProgress
+          ? { ...progress, delta: pendingProgress.delta + progress.delta }
+          : { ...progress };
+        if (progress.done || pendingProgress.delta.length >= 180 || Date.now() - lastProgressAt >= 160) flushProgress();
       };
       const auditFrom = (event: Awaited<ReturnType<typeof recordGenerationEvent>>): AgentAudit => ({
         runId: event.runId,
@@ -90,7 +113,7 @@ export async function POST(request: Request) {
         await status("Bob", "architecture", "架构确认", "HTML / CSS / JavaScript 三文件应用", "done");
         await status("Alex", "implementation", "生成应用", "正在实现页面、样式和交互", "working");
 
-        const result = await buildApp(prompt, planResult.plan, hasGeneratedVersion ? activeProject.files : undefined, generationAbort.signal, budget);
+        const result = await buildApp(prompt, planResult.plan, hasGeneratedVersion ? activeProject.files : undefined, generationAbort.signal, budget, reportProgress);
         if (result.usedFallback) await status("Alex", "provider:failover", "备用模型接管", `${model} → ${result.model}`, "done", { model: result.model });
         repairCount += result.repairCount;
         for (const path of ["index.html", "styles.css", "script.js"] as const) await file(path, result.files[path].length);
@@ -103,8 +126,11 @@ export async function POST(request: Request) {
         emit({ type: "status", agent: "Ray", title: "版本已保存", detail: `${budget.usage.totalTokens || "未返回"} tokens · 可回滚、分享和下载`, state: "done" });
         emit({ type: "complete", project: saved });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "生成失败，请重试";
-        if (generationAbort.signal.aborted) {
+        flushProgress();
+        const message = abortSource === "deadline"
+          ? "本轮生成超过线上 50 秒安全窗口，已自动停止。请重试，已保存版本不会受到影响。"
+          : error instanceof Error ? error.message : "生成失败，请重试";
+        if (abortSource === "client") {
           await releaseGeneration(projectId, identity.ownerId, activeGenerationId, activeProject.versions.length > 0 ? "ready" : "draft", "用户中止生成连接", "cancelled").catch(() => undefined);
         } else {
           let audit: AgentAudit | undefined;
@@ -117,11 +143,12 @@ export async function POST(request: Request) {
         }
       } finally {
         clearInterval(heartbeat);
-        if (!generationAbort.signal.aborted) controller.close();
+        clearTimeout(deadline);
+        if (abortSource !== "client") controller.close();
       }
     },
     cancel() {
-      generationAbort.abort();
+      abortGeneration("client", new DOMException("Browser cancelled the response stream", "AbortError"));
     },
   });
   return withWorkspaceIdentity(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } }), identity);

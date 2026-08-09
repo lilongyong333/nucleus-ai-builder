@@ -114,6 +114,7 @@ export type AgentAudit = {
 
 export type AgentEvent = (
   | { type: "status"; agent: string; title: string; detail: string; state: "working" | "done" }
+  | { type: "progress"; agent: "Alex" | "Ray"; phase: string; label: string; delta: string; totalChars: number; done: boolean; model: string }
   | { type: "plan"; plan: AgentPlan }
   | { type: "file"; path: keyof GeneratedFiles; size: number }
   | { type: "review"; report: AppQualityReport }

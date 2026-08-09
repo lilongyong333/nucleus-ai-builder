@@ -29,23 +29,42 @@ export function createGenerationBudget(): ModelBudget {
   return createModelBudget({
     maxCalls: runtimeInteger("OPENCODE_GO_MAX_MODEL_CALLS", 8, 1, 20),
     maxTotalTokens: runtimeInteger("OPENCODE_GO_MAX_TOTAL_TOKENS", 50_000, 1_000, 200_000),
-    maxDurationMs: runtimeInteger("OPENCODE_GO_MAX_DURATION_MS", 240_000, 5_000, 290_000),
+    maxDurationMs: runtimeInteger("OPENCODE_GO_MAX_DURATION_MS", 48_000, 5_000, 55_000),
   });
 }
 
-async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBudget, signal?: AbortSignal): Promise<GatewayChatResult> {
+export type GenerationProgress = {
+  agent: "Alex" | "Ray";
+  phase: string;
+  label: string;
+  delta: string;
+  totalChars: number;
+  done: boolean;
+  model: string;
+};
+
+type ProgressStage = Pick<GenerationProgress, "agent" | "phase" | "label">;
+
+async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBudget, signal?: AbortSignal, progress?: { stage: ProgressStage; report: (event: GenerationProgress) => void }): Promise<GatewayChatResult> {
   const apiKey = runtimeValue("OPENCODE_GO_API_KEY");
   if (!apiKey) throw new Error("站点还没有配置 OpenCode Go API Key");
-  return requestChat({
+  let lastTotalChars = 0;
+  const result = await requestChat({
     baseUrl: runtimeValue("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
     apiKey,
     models: activeModels(),
     messages,
     maxTokens,
-    requestTimeoutMs: runtimeInteger("OPENCODE_GO_REQUEST_TIMEOUT_MS", 55_000, 5_000, 90_000),
+    requestTimeoutMs: runtimeInteger("OPENCODE_GO_REQUEST_TIMEOUT_MS", 40_000, 5_000, 50_000),
     budget,
     signal,
+    onDelta: progress ? (update) => {
+      lastTotalChars = update.totalChars;
+      progress.report({ ...progress.stage, ...update, done: false });
+    } : undefined,
   });
+  if (progress) progress.report({ ...progress.stage, model: result.model, delta: "", totalChars: lastTotalChars || result.content.length, done: true });
+  return result;
 }
 
 export async function createPlan(prompt: string, currentFiles?: GeneratedFiles, signal?: AbortSignal, budget = createGenerationBudget()): Promise<{ plan: AgentPlan; usage: ModelUsage; durationMs: number; modelCalls: number; model: string; usedFallback: boolean }> {
@@ -55,7 +74,7 @@ export async function createPlan(prompt: string, currentFiles?: GeneratedFiles, 
   return { plan: planFromPrompt(prompt, Boolean(currentFiles)), usage: emptyUsage(), durationMs: Date.now() - startedAt, modelCalls: 0, model: "Iris deterministic SOP", usedFallback: false };
 }
 
-export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles, signal?: AbortSignal, budget = createGenerationBudget()): Promise<{ files: GeneratedFiles; summary: string; quality: AppQualityReport; usage: ModelUsage; durationMs: number; modelCalls: number; repairCount: number; model: string; models: string[]; usedFallback: boolean }> {
+export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles, signal?: AbortSignal, budget = createGenerationBudget(), reportProgress?: (event: GenerationProgress) => void): Promise<{ files: GeneratedFiles; summary: string; quality: AppQualityReport; usage: ModelUsage; durationMs: number; modelCalls: number; repairCount: number; model: string; models: string[]; usedFallback: boolean }> {
   const startedAt = Date.now();
   let usage = emptyUsage();
   let modelCalls = 0;
@@ -63,9 +82,9 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
   const models = new Set<string>();
   const existing = currentFiles ? `\nExisting files to improve:\n${Object.entries(currentFiles).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` : "";
   const initial = await chat([
-    { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup. Never place markdown fences inside a generated file.` },
+    { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup; all three files must be complete; keep the entire response compact and under 2800 tokens. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
-  ], 8000, budget, signal);
+  ], 3600, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:initial", label: "正在实时生成页面、样式和交互" }, report: reportProgress } : undefined);
   models.add(initial.model);
   let raw = initial.content;
   usage = addUsage(usage, initial.usage);
@@ -77,7 +96,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
       const repair = await chat([
         { role: "system", content: `You are repairing an incomplete artifact. Return only markdown code blocks for these missing files: ${missing.join(", ")}. Use the exact {path=filename} opening-line format. Do not repeat files that already exist. No reasoning.` },
         { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nExisting generated files:\n${Object.entries(partial).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
-      ], 5000, budget, signal);
+      ], 2200, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:missing", label: `正在补齐 ${missing.join("、")}` }, report: reportProgress } : undefined);
       models.add(repair.model);
       raw = `${raw}\n${repair.content}`;
       usage = addUsage(usage, repair.usage);
@@ -92,7 +111,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
     const repair = await chat([
       { role: "system", content: "You are Ray, a senior frontend QA engineer. Repair the supplied browser app so every reported quality issue is resolved without removing working features. Return only the changed files as markdown code blocks using the exact {path=filename} format. Do not include reasoning, JSON, or unchanged files." },
       { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nQuality report:\n${qualityRepairBrief(quality)}\n\nFiles to repair:\n${Object.entries(parsed.files).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
-    ], 6000, budget, signal);
+    ], 2600, budget, signal, reportProgress ? { stage: { agent: "Ray", phase: "quality:repair", label: "正在实时修复质量门问题" }, report: reportProgress } : undefined);
     models.add(repair.model);
     parsed = parseGeneratedReply(repair.content, parsed.summary, parsed.files);
     usage = addUsage(usage, repair.usage);

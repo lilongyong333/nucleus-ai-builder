@@ -186,13 +186,21 @@ export async function createProject(prompt: string, ownerId: string): Promise<Pr
 export async function getProject(id: string, ownerId: string): Promise<Project | null> {
   await ensureSchema();
   await db().prepare(`UPDATE projects SET owner_id=? WHERE id=? AND owner_id IS NULL`).bind(ownerId, id).run();
-  const row = await db().prepare(`SELECT * FROM projects WHERE id=? AND owner_id=?`).bind(id, ownerId).first<D1Row>();
+  let row = await db().prepare(`SELECT * FROM projects WHERE id=? AND owner_id=?`).bind(id, ownerId).first<D1Row>();
+  if (isStaleGeneration(row)) {
+    await recoverStaleGenerations(ownerId, id);
+    row = await db().prepare(`SELECT * FROM projects WHERE id=? AND owner_id=?`).bind(id, ownerId).first<D1Row>();
+  }
   return row ? projectFromRow(row) : null;
 }
 
 export async function listProjects(ownerId: string): Promise<Project[]> {
   await ensureSchema();
-  const rows = await db().prepare(`SELECT * FROM projects WHERE owner_id=? ORDER BY updated_at DESC LIMIT 20`).bind(ownerId).all<D1Row>();
+  let rows = await db().prepare(`SELECT * FROM projects WHERE owner_id=? ORDER BY updated_at DESC LIMIT 20`).bind(ownerId).all<D1Row>();
+  if ((rows.results ?? []).some(isStaleGeneration)) {
+    await recoverStaleGenerations(ownerId);
+    rows = await db().prepare(`SELECT * FROM projects WHERE owner_id=? ORDER BY updated_at DESC LIMIT 20`).bind(ownerId).all<D1Row>();
+  }
   return Promise.all((rows.results ?? []).map((row) => projectFromRow(row, false)));
 }
 
@@ -220,7 +228,7 @@ export async function beginGeneration(id: string, ownerId: string, prompt: strin
   await ensureSchema();
   const generationId = crypto.randomUUID();
   const now = new Date().toISOString();
-  const staleBefore = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const staleBefore = new Date(Date.now() - GENERATION_LEASE_TTL_MS).toISOString();
   const locked = await db().prepare(`UPDATE projects SET status='generating', prompt=?, generation_id=?, generation_started_at=?, updated_at=? WHERE id=? AND owner_id=? AND (status!='generating' OR generation_started_at IS NULL OR generation_started_at<?) RETURNING id`).bind(prompt, generationId, now, now, id, ownerId, staleBefore).first<{ id: string }>();
   if (!locked) return null;
   try {
@@ -234,6 +242,26 @@ export async function beginGeneration(id: string, ownerId: string, prompt: strin
     throw error;
   }
   return generationId;
+}
+
+const GENERATION_LEASE_TTL_MS = 65_000;
+
+function isStaleGeneration(row: D1Row | null | undefined): boolean {
+  if (!row || String(row.status) !== "generating" || !row.generation_started_at) return false;
+  const startedAt = Date.parse(String(row.generation_started_at));
+  return Number.isFinite(startedAt) && startedAt < Date.now() - GENERATION_LEASE_TTL_MS;
+}
+
+async function recoverStaleGenerations(ownerId: string, projectId?: string): Promise<void> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - GENERATION_LEASE_TTL_MS).toISOString();
+  const scopedProjectId = projectId ?? null;
+  const reason = "线上生成超过执行窗口，任务已自动回收，请重试";
+  await db().batch([
+    db().prepare(`UPDATE generation_runs SET status='failed', completed_at=?, duration_ms=MAX(0,CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER)), error=? WHERE id IN (SELECT generation_id FROM projects WHERE owner_id=? AND (? IS NULL OR id=?) AND status='generating' AND generation_id IS NOT NULL AND generation_started_at<?) AND status='running'`).bind(nowIso, nowIso, reason, ownerId, scopedProjectId, scopedProjectId, staleBefore),
+    db().prepare(`UPDATE projects SET status=CASE WHEN current_version_id IS NULL THEN 'error' ELSE 'ready' END, generation_id=NULL, generation_started_at=NULL, updated_at=? WHERE owner_id=? AND (? IS NULL OR id=?) AND status='generating' AND generation_started_at<?`).bind(nowIso, ownerId, scopedProjectId, scopedProjectId, staleBefore),
+  ]);
 }
 
 export async function recordGenerationEvent(runId: string, projectId: string, input: GenerationEventInput): Promise<GenerationEvent> {

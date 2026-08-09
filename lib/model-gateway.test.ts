@@ -3,6 +3,13 @@ import { createModelBudget, ModelGatewayError, requestChat } from "./model-gatew
 
 const messages = [{ role: "user" as const, content: "hello" }];
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const sse = (...chunks: string[]) => new Response(new ReadableStream({
+  start(controller) {
+    const encoder = new TextEncoder();
+    chunks.forEach((chunk) => controller.enqueue(encoder.encode(chunk)));
+    controller.close();
+  },
+}), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
 const budget = (overrides: Partial<Parameters<typeof createModelBudget>[0]> = {}) => createModelBudget({ maxCalls: 6, maxTotalTokens: 10_000, maxDurationMs: 30_000, ...overrides });
 
 describe("model gateway", () => {
@@ -12,6 +19,37 @@ describe("model gateway", () => {
     const result = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: shared, fetcher });
     expect(result).toMatchObject({ content: "OK", model: "primary", calls: 1, usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7 } });
     expect(shared).toMatchObject({ calls: 1, usage: { totalTokens: 7 }, modelsUsed: ["primary"] });
+  });
+
+  it("consumes OpenAI-compatible SSE chunks and reports visible content deltas", async () => {
+    const updates: Array<{ delta: string; totalChars: number }> = [];
+    let requestInit: RequestInit | undefined;
+    const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("https://provider.test/v1/chat/completions");
+      requestInit = init;
+      return sse(
+        'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"hidden reasoning"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"world"}}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n',
+        'data: [DONE]\n\n',
+      );
+    });
+    const result = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["primary"],
+      messages,
+      maxTokens: 20,
+      requestTimeoutMs: 1000,
+      budget: budget(),
+      fetcher,
+      onDelta: ({ delta, totalChars }) => updates.push({ delta, totalChars }),
+    });
+
+    expect(result).toMatchObject({ content: "Hello world", usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 } });
+    expect(updates).toEqual([{ delta: "Hello ", totalChars: 6 }, { delta: "world", totalChars: 11 }]);
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({ stream: true, stream_options: { include_usage: true } });
   });
 
   it("fails over when the primary model is unavailable", async () => {

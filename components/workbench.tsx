@@ -8,6 +8,7 @@ import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
 
 type TimelineItem = { id: string; agent: string; title: string; detail: string; state: "working" | "done" | "error"; time: string };
+type LiveStreamState = { agent: string; phase: string; label: string; text: string; totalChars: number; done: boolean; model: string };
 
 const agentTone: Record<string, string> = { Iris: "iris", Bob: "bob", Alex: "alex", Ray: "ray" };
 
@@ -21,6 +22,8 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [generating, setGenerating] = useState(false);
   const [requestText, setRequestText] = useState("");
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
+  const [liveStream, setLiveStream] = useState<LiveStreamState | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [livePlan, setLivePlan] = useState<AgentPlan | null>(null);
   const [liveQuality, setLiveQuality] = useState<AppQualityReport | null>(null);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
@@ -33,10 +36,18 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [showVersions, setShowVersions] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const activeRunStartedAt = project?.runs[0]?.startedAt ?? null;
+  const projectStatus = project?.status;
 
   const handleEvent = useCallback((event: AgentEvent) => {
     if (event.type === "status") {
       setTimeline((items) => [...items.filter((item) => !(item.agent === event.agent && item.state === "working")), { id: crypto.randomUUID(), agent: event.agent, title: event.title, detail: event.detail, state: event.state, time: nowTime() }]);
+    } else if (event.type === "progress") {
+      setLiveStream((current) => {
+        const sameStream = current?.phase === event.phase && current.model === event.model && event.totalChars >= current.totalChars;
+        const text = sameStream ? `${current.text}${event.delta}` : event.delta;
+        return { agent: event.agent, phase: event.phase, label: event.label, text: text.slice(-1800), totalChars: event.totalChars, done: event.done, model: event.model };
+      });
     } else if (event.type === "plan") {
       setLivePlan(event.plan);
     } else if (event.type === "file") {
@@ -50,6 +61,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       setProject(event.project);
       setLivePlan(event.project.plan);
       setLiveQuality(currentQuality(event.project));
+      setLiveStream(null);
       setActiveTab("preview");
       setNotice(`v${event.project.versions[0]?.versionNumber ?? 1} 已保存`);
     } else if (event.type === "error") {
@@ -64,6 +76,8 @@ export function Workbench({ projectId }: { projectId: string }) {
     setGenerating(true);
     setPreviewError("");
     setTimeline([]);
+    setLiveStream(null);
+    setElapsedSeconds(0);
     setLivePlan(null);
     setLiveQuality(null);
     setRequestText("");
@@ -101,15 +115,18 @@ export function Workbench({ projectId }: { projectId: string }) {
         const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
         const data = await response.json() as { project?: Project };
         if (response.ok && data.project) {
-          setProject(data.project);
-          setLivePlan(data.project.plan);
-          setLiveQuality(currentQuality(data.project));
-          if (data.project.status === "generating") {
-            setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "连接恢复中", detail: "浏览器连接已中断，服务端仍在生成；完成后会自动同步结果。", state: "working", time: nowTime() }]);
+          const recoveredProject = data.project;
+          setProject(recoveredProject);
+          setLivePlan(recoveredProject.plan);
+          setLiveQuality(currentQuality(recoveredProject));
+          setTimeline(timelineFromProject(recoveredProject));
+          if (recoveredProject.status === "generating") {
+            setLiveStream((current) => current ?? reconnectStream(recoveredProject));
+            setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "连接恢复中", detail: "已恢复云端执行记录，完成后会自动同步结果。", state: "working", time: nowTime() }]);
             setNotice("服务端仍在生成，正在自动恢复");
             return;
           }
-          if (data.project.status === "ready" && data.project.versions.length > 0) {
+          if (recoveredProject.status === "ready" && recoveredProject.versions.length > 0) {
             setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "结果已恢复", detail: "已从云端同步服务端完成的版本。", state: "done", time: nowTime() }]);
             setNotice("已恢复服务端生成结果");
             return;
@@ -142,6 +159,10 @@ export function Workbench({ projectId }: { projectId: string }) {
       setProject(data.project);
       setLivePlan(data.project.plan);
       setLiveQuality(currentQuality(data.project));
+      if (data.project.status === "generating" || data.project.status === "error") {
+        setTimeline(timelineFromProject(data.project));
+        setLiveStream(data.project.status === "generating" ? reconnectStream(data.project) : null);
+      }
       return data.project as Project;
     }).then((value) => {
       if (value.status === "draft" && value.versions.length === 0 && !startedRef.current) {
@@ -150,6 +171,16 @@ export function Workbench({ projectId }: { projectId: string }) {
       }
     }).catch((cause) => setNotice(cause instanceof Error ? cause.message : "读取项目失败")).finally(() => setLoading(false));
   }, [projectId, runGenerate]);
+
+  useEffect(() => {
+    const busy = generating || projectStatus === "generating";
+    if (!busy) return;
+    const parsed = activeRunStartedAt ? Date.parse(activeRunStartedAt) : Number.NaN;
+    const startedAt = Number.isFinite(parsed) ? parsed : Date.now();
+    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeRunStartedAt, generating, projectStatus]);
 
   useEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -179,13 +210,16 @@ export function Workbench({ projectId }: { projectId: string }) {
         const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
         const data = await response.json() as { project?: Project };
         if (!response.ok || !data.project || stopped) throw new Error("项目状态读取失败");
-        if (data.project.status === "generating") {
-          timer = window.setTimeout(() => void poll(), 1800);
-          return;
-        }
         setProject(data.project);
         setLivePlan(data.project.plan);
         setLiveQuality(currentQuality(data.project));
+        setTimeline(timelineFromProject(data.project));
+        if (data.project.status === "generating") {
+          setLiveStream((current) => current ?? reconnectStream(data.project!));
+          timer = window.setTimeout(() => void poll(), 1800);
+          return;
+        }
+        setLiveStream(null);
         if (data.project.status === "ready") {
           setPreviewError(""); setPreviewState("checking"); setPreviewKey((value) => value + 1);
           setTimeline((items) => [...items.filter((item) => item.title !== "连接恢复中"), { id: crypto.randomUUID(), agent: "Ray", title: "结果已恢复", detail: "后台生成完成，版本与审计记录已自动同步。", state: "done", time: nowTime() }]);
@@ -245,6 +279,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   if (loading || !project) return <div className="workbench-loading"><span className="brand-mark"><Boxes size={22} /></span><LoaderCircle className="spin" size={22} /><p>正在打开工作台…</p></div>;
   const latestRun = project.runs[0];
   const busy = generating || project.status === "generating";
+  const currentAgent = liveStream?.agent ?? timeline.at(-1)?.agent ?? "Iris";
   const statusLabel = busy ? "生成中" : project.status === "error" ? "生成失败" : project.status === "ready" ? "已保存" : "草稿";
 
   return (
@@ -256,10 +291,11 @@ export function Workbench({ projectId }: { projectId: string }) {
 
       <aside className="agent-panel">
         <div className="panel-heading"><div><span>智能体团队</span><small>{busy ? "正在协作" : "本轮记录"}</small></div><button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label="收起侧栏"><PanelLeftClose size={17} /></button></div>
-        <div className="agent-roster">{["Iris", "Bob", "Alex", "Ray"].map((agent) => <div key={agent} className={`agent-avatar ${agentTone[agent]}`}>{agent.slice(0, 1)}<span className={busy && timeline.at(-1)?.agent === agent ? "online" : ""} /></div>)}<div className="roster-copy"><strong>{busy ? `${timeline.at(-1)?.agent ?? "Iris"} 正在工作` : "4 位成员已就绪"}</strong><span>Planner · Builder · Reviewer</span></div></div>
+        <div className="agent-roster">{["Iris", "Bob", "Alex", "Ray"].map((agent) => <div key={agent} className={`agent-avatar ${agentTone[agent]}`}>{agent.slice(0, 1)}<span className={busy && currentAgent === agent ? "online" : ""} /></div>)}<div className="roster-copy"><strong>{busy ? `${currentAgent} 正在工作` : "4 位成员已就绪"}</strong><span>Planner · Builder · Reviewer</span></div></div>
 
         <div className="timeline">
           {timeline.length === 0 && !busy && <div className="timeline-empty"><Bot size={22} /><strong>等待新的修改</strong><p>在下方输入需求，团队会继续迭代当前应用。</p></div>}
+          {timeline.length === 0 && busy && <div className="timeline-item working"><div className="timeline-rail"><span className="agent-avatar small iris">I</span></div><div className="timeline-content"><div><strong>Iris</strong><time>{nowTime()}</time></div><h4>连接实时执行记录<LoaderCircle className="spin" size={13} /></h4><p>首个智能体事件到达后会立即显示在这里。</p></div></div>}
           {timeline.map((item, index) => <div className={`timeline-item ${item.state}`} key={item.id}><div className="timeline-rail"><span className={`agent-avatar small ${agentTone[item.agent] ?? "ray"}`}>{item.agent.slice(0, 1)}</span>{index < timeline.length - 1 && <i />}</div><div className="timeline-content"><div><strong>{item.agent}</strong><time>{item.time}</time></div><h4>{item.title}{item.state === "working" && <LoaderCircle className="spin" size={13} />}{item.state === "done" && <Check size={13} />}{item.state === "error" && <CircleAlert size={13} />}</h4><p>{item.detail}</p></div></div>)}
         </div>
 
@@ -269,7 +305,7 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {latestRun && <details className={`run-audit-card ${latestRun.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(latestRun.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(latestRun.durationMs)}</strong><small>总耗时</small></span><span><strong>{latestRun.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{latestRun.modelCalls}</strong><small>模型调用</small></span><span><strong>{latestRun.events.length}</strong><small>事件</small></span></div><ol>{latestRun.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol><footer><code>{latestRun.id.slice(0, 8)}</code><span>{latestRun.model}{latestRun.repairCount ? ` · ${latestRun.repairCount} 次修复` : ""}</span></footer></details>}
 
-        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={busy} /><div><span><MessageSquareText size={13} /> {busy ? "生成任务进行中" : "继续迭代"}</span>{busy ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
+        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={busy} /><div><span><MessageSquareText size={13} /> {busy ? "生成任务进行中" : project.status === "error" ? "上次任务已回收，可立即重试" : "继续迭代"}</span>{busy ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : project.status === "error" && requestText.trim().length < 3 ? <button type="button" onClick={() => void runGenerate(project.prompt)} aria-label="重试上次生成"><RefreshCcw size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
       </aside>
 
       {!sidebarOpen && <button className="reopen-sidebar" onClick={() => setSidebarOpen(true)}><Bot size={18} /><span>智能体</span></button>}
@@ -279,7 +315,7 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {previewError && <div className="runtime-error"><CircleAlert size={16} /><div><strong>预览发现运行错误</strong><span>{previewError}</span></div><button onClick={() => void runGenerate(`请修复这个运行错误，并保持当前功能：${previewError}`)} disabled={busy}><Sparkles size={14} /> 让 Ray 修复</button><button className="icon-button" onClick={() => setPreviewError("")}><X size={14} /></button></div>}
 
-        {activeTab === "preview" ? <div className={`preview-stage ${device}`}><div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
+        {activeTab === "preview" ? <div className={`preview-stage ${device}`}>{busy && <section className="generation-stream-card" aria-live="polite"><header><span className={`agent-avatar small ${agentTone[currentAgent] ?? "iris"}`}>{currentAgent.slice(0, 1)}</span><div><small>LIVE GENERATION</small><strong>{liveStream?.label ?? timeline.at(-1)?.title ?? "正在连接模型"}</strong></div><time>{elapsedSeconds}s</time></header><pre>{liveStream?.text || "等待模型返回第一个内容片段…"}<i /></pre><footer><span>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 个字符已实时接收` : "正在建立流式连接"}</span><b>{liveStream?.done ? "本阶段完成" : "实时输出中"}</b></footer></section>}<div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
       </section>
 
       {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}{version.quality ? ` · Ray ${version.quality.score}/100` : ""}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}
@@ -294,3 +330,20 @@ function slugify(value: string) { return value.toLowerCase().replace(/[^a-z0-9\u
 function currentQuality(project: Project): AppQualityReport | null { return project.versions.find((version) => version.id === project.currentVersionId)?.quality ?? project.versions[0]?.quality ?? null; }
 function formatDuration(value: number | null) { return value === null ? "—" : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`; }
 function runStatusLabel(status: Project["runs"][number]["status"]) { return ({ running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝" })[status]; }
+function timelineFromProject(project: Project): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  const run = project.runs[0];
+  for (const event of run?.events ?? []) {
+    const withoutWorking = items.filter((item) => !(item.agent === event.agent && item.state === "working"));
+    withoutWorking.push({ id: event.id, agent: event.agent, title: event.title, detail: event.detail, state: event.state, time: new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) });
+    items.splice(0, items.length, ...withoutWorking);
+  }
+  if (project.status === "error" && run?.error && !run.events.some((event) => event.state === "error")) {
+    items.push({ id: `${run.id}-recovered-error`, agent: "Ray", title: "生成任务已停止", detail: run.error, state: "error", time: nowTime() });
+  }
+  return items;
+}
+function reconnectStream(project: Project): LiveStreamState {
+  const event = project.runs[0]?.events.at(-1);
+  return { agent: event?.agent ?? "Iris", phase: event?.phase ?? "reconnect", label: event?.title ?? "正在恢复实时执行记录", text: "此任务已在云端开始，页面正在同步已保存的智能体事件…", totalChars: 0, done: false, model: event?.model ?? project.runs[0]?.model ?? "" };
+}

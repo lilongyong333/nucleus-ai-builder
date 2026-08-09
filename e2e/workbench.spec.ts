@@ -181,6 +181,7 @@ test("recovers a server-side generation after the browser stream disconnects", a
   });
 
   await page.goto("/w/e2e-project");
+  await expect(page.locator(".timeline")).toContainText("需求分析完成");
   await expect(page.locator(".project-title small")).toHaveText("已保存", { timeout: 8000 });
   await expect(page.getByRole("heading", { name: "结果已恢复" })).toBeVisible();
   await expect(page.getByRole("button", { name: /版本 v1/ })).toBeVisible();

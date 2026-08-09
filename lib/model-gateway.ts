@@ -31,6 +31,12 @@ export type GatewayChatResult = {
   attempts: ModelAttempt[];
 };
 
+export type ModelStreamUpdate = {
+  model: string;
+  delta: string;
+  totalChars: number;
+};
+
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 export class ModelGatewayError extends Error {
@@ -62,6 +68,7 @@ export async function requestChat(input: {
   budget: ModelBudget;
   signal?: AbortSignal;
   fetcher?: FetchLike;
+  onDelta?: (update: ModelStreamUpdate) => void;
 }): Promise<GatewayChatResult> {
   const startedAt = Date.now();
   const attempts: ModelAttempt[] = [];
@@ -91,7 +98,7 @@ export async function requestChat(input: {
         const response = await fetcher(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${input.apiKey}` },
-          body: JSON.stringify({ model, messages, max_tokens: input.maxTokens, stream: false }),
+          body: JSON.stringify({ model, messages, max_tokens: input.maxTokens, stream: true, stream_options: { include_usage: true } }),
           signal,
         });
         if (!response.ok) {
@@ -104,11 +111,11 @@ export async function requestChat(input: {
           break;
         }
 
-        const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; usage?: unknown };
+        const data = await readChatResponse(response, model, input.onDelta);
         const usage = normalizeUsage(data.usage);
         chatUsage = addUsage(chatUsage, usage);
         input.budget.usage = addUsage(input.budget.usage, usage);
-        const content = usableContent(data.choices?.[0]?.message);
+        const content = usableContent({ content: data.content, reasoning_content: data.reasoningContent });
         attempts.push(attempt(model, content ? "success" : "empty", attemptStartedAt, response.status, usage, content ? null : "Empty model response"));
         if (input.budget.usage.totalTokens > input.budget.maxTotalTokens) {
           attempts[attempts.length - 1] = { ...attempts[attempts.length - 1], status: "budget_exceeded", error: "Token budget exhausted" };
@@ -131,6 +138,53 @@ export async function requestChat(input: {
     }
   }
   throw new ModelGatewayError(lastError, attempts, "provider");
+}
+
+async function readChatResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<{ content: string; reasoningContent: string; usage: unknown }> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; usage?: unknown };
+    const message = data.choices?.[0]?.message;
+    const content = typeof message?.content === "string" ? message.content : "";
+    if (content) onDelta?.({ model, delta: content, totalChars: content.length });
+    return { content, reasoningContent: typeof message?.reasoning_content === "string" ? message.reasoning_content : "", usage: data.usage };
+  }
+
+  if (!response.body) throw new Error(`Model ${model} returned an empty stream`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let reasoningContent = "";
+  let usage: unknown;
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    const chunk = JSON.parse(payload) as {
+      choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
+      usage?: unknown;
+    };
+    if (chunk.usage !== undefined) usage = chunk.usage;
+    const delta = chunk.choices?.[0]?.delta;
+    if (typeof delta?.reasoning_content === "string") reasoningContent += delta.reasoning_content;
+    if (typeof delta?.content !== "string" || delta.content.length === 0) return;
+    content += delta.content;
+    onDelta?.({ model, delta: delta.content, totalChars: content.length });
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeLine(buffer);
+  return { content, reasoningContent, usage };
 }
 
 function reserveCall(budget: ModelBudget, model: string, attempts: ModelAttempt[]) {
