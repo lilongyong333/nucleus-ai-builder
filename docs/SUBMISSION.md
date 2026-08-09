@@ -4,6 +4,7 @@
 
 已发布示例：
 
+- 面试项目冲刺看板：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184
 - BudgetLens 财务 CRUD：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/budgetlens-4e9b1d
 - 面试准备清单：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a
 
@@ -52,9 +53,9 @@
 ## 7. 演示建议（60–90 秒）
 
 1. 用 ChatGPT 登录，展示账号项目中心、工作台详细链接和公开成品链接；
-2. 打开 BudgetLens，实际新增/删除一笔预算；
-3. 展示“启动校验通过”和 Ray 100/A；
-4. 展开执行审计，说明 38 秒、7,470 Tokens、2 次模型调用和运行 ID；
+2. 打开面试项目冲刺看板，新增任务并连续流转到完成；
+3. 展示总数/完成率实时更新、“启动校验通过”和 Ray 100/A；
+4. 展开执行审计，说明 21 秒、6,293 Tokens、1 次模型调用和运行 ID；
 5. 打开对话记忆与版本历史；
 6. 输入“增加预算超支提醒”继续修改并展示状态恢复/取消；
 7. 发布并打开固定版本公开页；

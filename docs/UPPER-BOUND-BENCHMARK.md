@@ -57,6 +57,7 @@ Nucleus 当前已经跨过静态 PoC：它能生成真实交互、保存账号�
 
 | 场景 | 结果 | 生产证据 | 实际操作 |
 |---|---|---|---|
+| 面试项目冲刺看板 | 21 秒；6,293 Tokens；1 次模型调用；11 事件；`glm-5.2`；Ray 100/A | <https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184> | 新增高优先级“补齐系统设计演示”，搜索后从待办流转到进行中、已完成；总数 4→5，完成率 25%→20%→40%；沙箱启动通过 |
 | BudgetLens 财务 CRUD | 38 秒；7,470 Tokens；2 次模型调用；11 事件；`glm-5.2`；Ray 100/A | <https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/budgetlens-4e9b1d> | 新增 123 元“基准测试餐费”后，记录与统计实时更新；沙箱启动通过 |
 | 面试准备清单 | 18 秒；4,954 Tokens；2 次调用；11 事件；Ray 100/A | <https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a> | 新增任务、键盘勾选、完成筛选，进度从 0/1 更新到 1/1 |
 | 习惯打卡器 | 正式环境完成 v1 并发布 | <https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-c4fbb7> | 三文件齐全，公开页 HTTP 200 |
@@ -70,7 +71,7 @@ Nucleus 当前已经跨过静态 PoC：它能生成真实交互、保存账号�
 
 对应自动回归已经覆盖“页面打开时服务端任务仍在运行，随后完成并自动恢复结果”，且验证不会再次 POST `/api/generate`。
 
-心跳和恢复改善了断流后的体验，但不能缩短上游模型本身占用的时间。Nucleus 因此把 Iris 规划改成确定性本地 SOP：保留结构化计划与 Agent 审计工件，规划耗时降到毫秒级、零 Token；正常新建应用只需一次代码模型调用。部署后同题复测确认 Iris 从 27 秒降到 0ms，但 Qwen 的复杂三文件输出仍越过长连接窗口，因此代码主模型按真实场景延迟改为 GLM，Qwen 留作故障降级。重跑结果会继续按同一协议记录，不用旧失败样本冒充成功。
+心跳和恢复改善了断流后的体验，但不能缩短上游模型本身占用的时间。Nucleus 因此把 Iris 规划改成确定性本地 SOP：保留结构化计划与 Agent 审计工件，规划耗时降到毫秒级、零 Token；正常新建应用只需一次代码模型调用。部署后同题复测确认 Iris 从 27 秒降到 0ms，但 Qwen 的复杂三文件输出仍越过长连接窗口，因此代码主模型按真实场景延迟改为 GLM，Qwen 留作故障降级。同题最终在 21 秒完成，且真实新增、搜索、两次流转和统计更新全部通过。
 
 ## 成功率如何表达
 

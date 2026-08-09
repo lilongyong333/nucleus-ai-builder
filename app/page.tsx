@@ -14,6 +14,7 @@ const examples = [
 ];
 
 const liveDemos = [
+  { title: "面试项目冲刺看板", detail: "21 秒 · 1 次模型调用 · Ray 100/A", href: "/p/app-0bd184" },
   { title: "BudgetLens 财务 CRUD", detail: "Ray 100/A · 已验证新增记录与实时统计", href: "/p/budgetlens-4e9b1d" },
   { title: "面试准备清单", detail: "Ray 100/A · 已验证新增、勾选与筛选", href: "/p/app-6e0e9a" },
   { title: "习惯打卡器", detail: "v1 · 三文件完整公开成品", href: "/p/app-c4fbb7" },

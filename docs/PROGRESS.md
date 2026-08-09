@@ -146,7 +146,7 @@ Production      passed
 
 ## 真实 Demo 基准
 
-详细方法和第一梯队对照见 `docs/UPPER-BOUND-BENCHMARK.md`。已完成的 BudgetLens 财务 CRUD：38 秒、7,470 Tokens、2 次模型调用、11 个事件、Ray 100/A；人工新增 123 元记录后明细和统计更新，并发布为 `/p/budgetlens-4e9b1d`。
+详细方法和第一梯队对照见 `docs/UPPER-BOUND-BENCHMARK.md`。面试项目冲刺看板在确定性 Iris + GLM 代码主模型下 21 秒完成，6,293 Tokens、1 次模型调用、11 个事件、Ray 100/A；人工验证新增、搜索、两次流转和完成率更新，并发布为 `/p/app-0bd184`。BudgetLens 财务 CRUD 为 38 秒、7,470 Tokens、2 次模型调用、11 个事件、Ray 100/A；人工新增 123 元记录后明细和统计更新，并发布为 `/p/budgetlens-4e9b1d`。
 
 ## 第三轮：可审计的多智能体运行
 

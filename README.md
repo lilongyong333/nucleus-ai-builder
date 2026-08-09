@@ -6,6 +6,8 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 
 **在线体验：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
+**复杂看板成品：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184
+
 **公开源码：** https://github.com/lilongyong333/nucleus-ai-builder
 
 ## 已实现功能

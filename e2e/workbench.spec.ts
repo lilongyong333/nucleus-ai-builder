@@ -82,7 +82,7 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /描述一个想法/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "开始构建" })).toBeVisible();
-  await expect(page.locator(".live-demo-grid > a")).toHaveCount(3);
+  await expect(page.locator(".live-demo-grid > a")).toHaveCount(4);
   await expect(page.getByRole("link", { name: /BudgetLens 财务 CRUD/ })).toHaveAttribute("href", "/p/budgetlens-4e9b1d");
   const promptInput = page.getByLabel("描述你想创建的应用");
   await promptInput.fill("制作一个面试计划板");
