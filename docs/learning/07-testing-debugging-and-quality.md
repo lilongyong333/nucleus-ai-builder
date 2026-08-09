@@ -271,10 +271,12 @@ Playwright 不再只检查 `href`，而是实际点击“打开工作台 → 返
 
 1. 应用对浏览器使用 NDJSON，但模型网关请求写的是 `stream:false`。所以只有进入/离开某个阶段时才有事件，模型生成代码的几十秒内没有真实内容片段。
 2. Sites 当前生产 Worker 在约 60 秒取消长请求。对应日志明确记录 `/api/generate` 的 `wallTimeMs=60285`、`outcome=canceled`；进程来不及写失败终态，旧租约就留在 `generating`。
+3. 第一版改成模型 SSE 后仍没有及时显示，因为整个生成流程写在 `async start(controller)` 中。`ReadableStream` 会等待启动 Promise 完成后再开放读取；事件虽然已经 enqueue，浏览器仍要等整轮结束。
 
 ### 处理
 
 - OpenCode Go 的 Chat Completions 是 OpenAI-compatible 接口；改成 SSE `stream:true`，解析 `choices[0].delta.content`；
+- `ReadableStream.start` 保持同步，在其中用独立异步任务执行生成；增加回归测试，模型 Promise 尚未结束时，`reader.read()` 必须已经取得 Iris 首事件；
 - 不把 `reasoning_content` 传给浏览器，避免把模型内部推理误当成“流式展示”；
 - 服务端将小 Token 合并后再发给前端，工作台显示真实字符数、实时时间和输出尾部；
 - 重新打开页面时，从 D1 的 `agent_events` 恢复阶段时间线；

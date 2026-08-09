@@ -3,7 +3,9 @@ import { starterFiles } from "./runtime";
 import type { Project } from "./types";
 
 const mocks = vi.hoisted(() => ({
-  markError: vi.fn(),
+  buildApp: vi.fn(),
+  createPlan: vi.fn(),
+  markError: vi.fn(async () => undefined),
   recordGenerationEvent: vi.fn(async (runId: string, projectId: string, input: Record<string, unknown>) => ({
     id: `event-${String(input.sequence)}`,
     runId,
@@ -58,8 +60,8 @@ vi.mock("@/lib/opencode", () => ({
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     modelsUsed: [],
   }),
-  createPlan: vi.fn(async () => { throw new Error("intentional model failure"); }),
-  buildApp: vi.fn(),
+  createPlan: mocks.createPlan,
+  buildApp: mocks.buildApp,
 }));
 
 vi.mock("@/lib/session", () => ({
@@ -69,8 +71,11 @@ vi.mock("@/lib/session", () => ({
 
 import { POST } from "@/app/api/generate/route";
 
-describe("generation route audit failures", () => {
-  beforeEach(() => vi.clearAllMocks());
+describe("generation route streaming and audit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.createPlan.mockRejectedValue(new Error("intentional model failure"));
+  });
 
   it("streams and persists a terminal failure event with run metrics", async () => {
     const response = await POST(new Request("https://example.com/api/generate", {
@@ -99,5 +104,36 @@ describe("generation route audit failures", () => {
       "intentional model failure",
       expect.objectContaining({ modelCalls: 0, repairCount: 0, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
     );
+  });
+
+  it("exposes the first agent event before the model build finishes", async () => {
+    let rejectBuild: ((reason: Error) => void) | undefined;
+    const pendingBuild = new Promise((_resolve, reject) => { rejectBuild = reject; });
+    mocks.createPlan.mockResolvedValue({
+      plan: { appName: "流式测试", summary: "验证首片", features: ["首片可见"], design: "测试界面" },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      durationMs: 1,
+      modelCalls: 0,
+      model: "Iris deterministic SOP",
+      usedFallback: false,
+    });
+    mocks.buildApp.mockReturnValue(pendingBuild);
+
+    const response = await POST(new Request("https://example.com/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: project.id, prompt: "Build a responsive stream" }),
+    }));
+    const reader = response.body!.getReader();
+    const firstRead = reader.read();
+    const first = await Promise.race([
+      firstRead,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("first stream event was buffered")), 250)),
+    ]);
+    expect(new TextDecoder().decode(first.value)).toContain('"type":"status"');
+    expect(new TextDecoder().decode(first.value)).toContain("理解需求");
+
+    rejectBuild?.(new Error("finish stream test"));
+    while (!(await reader.read()).done) { /* drain so the route can close cleanly */ }
   });
 });

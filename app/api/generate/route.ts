@@ -52,7 +52,8 @@ export async function POST(request: Request) {
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
-    async start(controller) {
+    start(controller) {
+      void (async () => {
       const deadline = setTimeout(() => abortGeneration("deadline", new DOMException("Hosted generation deadline exceeded", "TimeoutError")), Math.max(1, 52_000 - (Date.now() - runStartedAt)));
       const heartbeat = setInterval(() => {
         if (abortSource !== "client") controller.enqueue(encoder.encode("\n"));
@@ -146,6 +147,7 @@ export async function POST(request: Request) {
         clearTimeout(deadline);
         if (abortSource !== "client") controller.close();
       }
+      })();
     },
     cancel() {
       abortGeneration("client", new DOMException("Browser cancelled the response stream", "AbortError"));
