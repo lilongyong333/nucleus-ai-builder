@@ -582,13 +582,14 @@ GET  /p/:slug                      200
 
 ## E. 当前生产证据
 
-- 网站：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+- 网站：<https://www.llynb.cc>
+- Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
 - GitHub：<https://github.com/lilongyong333/nucleus-ai-builder>
 - PR：<https://github.com/lilongyong333/nucleus-ai-builder/pull/2>
-- 复杂看板：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184>
-- BudgetLens：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/budgetlens-4e9b1d>
-- 面试清单：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a>
-- 习惯打卡：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-c4fbb7>
+- 复杂看板：<https://www.llynb.cc/p/app-0bd184>
+- BudgetLens：<https://www.llynb.cc/p/budgetlens-4e9b1d>
+- 面试清单：<https://www.llynb.cc/p/app-6e0e9a>
+- 习惯打卡：<https://www.llynb.cc/p/app-c4fbb7>
 
 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A，真实新增/搜索/两次流转/统计更新通过。
 

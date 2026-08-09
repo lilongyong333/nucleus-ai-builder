@@ -24,6 +24,7 @@
 ## 想快速理解最终方案
 
 - [企业级开发、部署与排障总手册](ENGINEERING-HANDBOOK.md)
+- [www.llynb.cc 自定义域名与长期托管](CUSTOM-DOMAIN-DEPLOYMENT.md)
 - [架构与工程取舍](DESIGN.md)
 - [提交与 90 秒演示说明](SUBMISSION.md)
 
@@ -37,7 +38,8 @@
 
 - [逐轮开发与生产验收记录](PROGRESS.md)
 - [GitHub Draft PR #2](https://github.com/lilongyong333/nucleus-ai-builder/pull/2)
-- [在线站点](https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site)
+- [自定义域名在线站点](https://www.llynb.cc)
+- [Sites 备用地址](https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site)
 
 ## 文档职责
 
@@ -46,6 +48,7 @@
 | `learning/00` | 真实施工历史和故障因果 |
 | `learning/01–12` | 分主题教学 |
 | `learning/13` | 可照做的复现/重建/发布 Runbook |
+| `CUSTOM-DOMAIN-DEPLOYMENT.md` | 自定义域名、DNS、验收和回滚真源 |
 | `DESIGN.md` | 当前架构和关键取舍 |
 | `PROGRESS.md` | 每轮验证事实 |
 | `UPPER-BOUND-BENCHMARK.md` | 竞品上限和生产样本 |

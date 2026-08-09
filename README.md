@@ -4,9 +4,11 @@
 
 Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接体验；登录后项目、版本和对话记忆会随账号跨设备保存。输入一句需求即可看到 Iris（需求）、Bob（架构）、Alex（开发）和 Ray（检查）协作完成规划、代码生成、预览和版本保存。
 
-**在线体验：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+**在线体验：** https://www.llynb.cc
 
-**复杂看板成品：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184
+**复杂看板成品：** https://www.llynb.cc/p/app-0bd184
+
+**Sites 备用地址：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
 **公开源码：** https://github.com/lilongyong333/nucleus-ai-builder
 
@@ -108,6 +110,7 @@ pnpm build
 - [从零到上线：完整教学手册](docs/learning/README.md)
 - [架构与取舍](docs/DESIGN.md)
 - [企业级开发、GitHub、部署与排障教学](docs/ENGINEERING-HANDBOOK.md)
+- [www.llynb.cc 自定义域名与长期托管](docs/CUSTOM-DOMAIN-DEPLOYMENT.md)
 - [同类第一梯队上限基准与真实 Demo](docs/UPPER-BOUND-BENCHMARK.md)
 - [与 MetaGPT / Atoms 的差距分析与优化路线](docs/METAGPT-GAP-ANALYSIS.md)
 - [开发进度与验收记录](docs/PROGRESS.md)

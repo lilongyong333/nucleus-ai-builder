@@ -205,3 +205,14 @@ Production      passed
 - v2 私有文件包含该文本，但未重新发布的公开页前后均不包含；数据库中 `currentVersionId` 与 `publishedVersionId` 指向不同版本；
 - v2 Ray 质量结果为 100/A 且通过；公开 v1 页面 HTTP 200：`https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a`；
 - Node/undici 自动化会被站点边缘 Bot 防护返回 403；浏览器型 PowerShell 和 .NET HttpClient 在获得边缘 Cookie 后均可正常验收。该 403 与应用 API 授权状态分开记录。
+
+## 第七轮：自定义域名与长期托管
+
+- 2026-08-09 将 `www.llynb.cc` 添加到现有 Nucleus Sites 项目，避免为 Railway 复制 Worker、D1、身份和环境变量；
+- 上线前确认 `www` 原 Cloudflare Tunnel 目标返回 530，而 `agent.llynb.cc` Railway 服务仍返回 200；
+- 只替换 `www`：CNAME 指向 `custom-domains.chatgpt.site` 并设为 DNS only，增加 Sites 签发的两条 TXT；
+- `agent`、`api`、`game` 和 `atoms` 记录均未修改；
+- Sites custom domain、provider 和 SSL 三个状态均达到 `active`；
+- 公共 1.1.1.1 DNS 返回正确 CNAME；`https://www.llynb.cc` 和 `/api/session` 均返回 200；
+- 浏览器从自定义域名打开复杂看板并新增“验证 www.llynb.cc 长期在线”，总数 4→5、完成率 25%→20%；
+- 完整配置、以后发布和回滚步骤见 `docs/CUSTOM-DOMAIN-DEPLOYMENT.md`。

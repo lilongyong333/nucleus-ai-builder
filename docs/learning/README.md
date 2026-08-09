@@ -19,7 +19,9 @@ Nucleus 是一个 AI 网页应用生成器。用户输入一句需求后，系�
 9. 在受限 iframe 中运行并回报 `ready/error/unhandledrejection`；
 10. 支持断流恢复、取消、继续修改、恢复旧版本、固定版本发布和 ZIP 下载。
 
-在线地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+自定义域名：<https://www.llynb.cc>
+
+Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
 
 源码地址：<https://github.com/lilongyong333/nucleus-ai-builder>
 
@@ -41,8 +43,9 @@ Nucleus 是一个 AI 网页应用生成器。用户输入一句需求后，系�
 | 11 | [继续开发练习](11-learning-path-and-exercises.md) | 零基础按什么顺序改代码，如何避免越改越乱 |
 | 12 | [演示、答辩与术语](12-demo-interview-and-glossary.md) | 怎么讲项目，面试官追问时如何回答 |
 | 13 | [从零到生产落地手册](13-zero-to-production-runbook.md) | 怎样克隆运行、按提交重建、上 GitHub、配 D1/模型并部署验收 |
+| 14 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
 
-如果你现在只想“照着做出来”，先读 00、13、07、09；如果你想真正理解代码，再按 01–12 顺序阅读。
+如果你现在只想“照着做出来”，先读 00、13、07、09 和自定义域名文档；如果你想真正理解代码，再按 01–12 顺序阅读。
 
 ## 代码地图
 
@@ -119,7 +122,8 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 ## 当前可直接核对的证据
 
-- 在线站点：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+- 在线站点：<https://www.llynb.cc>
+- Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
 - GitHub PR：<https://github.com/lilongyong333/nucleus-ai-builder/pull/2>
 - 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A；
 - 首页四个固定成品链接均返回 200；

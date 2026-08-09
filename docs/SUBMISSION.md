@@ -1,12 +1,15 @@
 # Nucleus — 笔试提交说明
 
-在线体验：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
+在线体验：https://www.llynb.cc
+
+Sites 备用地址：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
 已发布示例：
 
-- 面试项目冲刺看板：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-0bd184
-- BudgetLens 财务 CRUD：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/budgetlens-4e9b1d
-- 面试准备清单：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a
+- 面试项目冲刺看板：https://www.llynb.cc/p/app-0bd184
+- BudgetLens 财务 CRUD：https://www.llynb.cc/p/budgetlens-4e9b1d
+- 面试准备清单：https://www.llynb.cc/p/app-6e0e9a
+- 习惯打卡器：https://www.llynb.cc/p/app-c4fbb7
 
 公开源码：https://github.com/lilongyong333/nucleus-ai-builder
 

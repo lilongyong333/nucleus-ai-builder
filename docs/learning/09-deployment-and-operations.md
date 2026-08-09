@@ -139,7 +139,11 @@ GET  /p/:slug                  -> 200，预览可交互
 feccdf10ce462a94b070ae629241cb3110dd4aa4
 ```
 
-在线地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+自定义域名：<https://www.llynb.cc>
+
+Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+
+`www.llynb.cc` 直接绑定现有 Sites 项目，而不是在 Railway 再部署一套应用。Cloudflare 中的 `www` 使用 DNS-only CNAME 指向 `custom-domains.chatgpt.site`，并通过 Sites 返回的两条 TXT 完成域名所有权与证书验证。详细步骤、故障判断和回滚见 [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md)。
 
 ## 10. 线上问题怎么定位
 
