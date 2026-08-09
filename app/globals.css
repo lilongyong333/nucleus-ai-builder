@@ -20,3 +20,4 @@
 @media(max-width:760px){.nav-account span{display:none}.account-hero{padding-top:38px}.account-projects{grid-template-columns:1fr}.account-nav{padding:0 16px}.account-nav>div a:first-child{display:none}.account-content,.account-hero{padding-left:16px;padding-right:16px}.account-hero h1{font-size:27px}.account-projects>article{padding:15px}}
 
 .runtime-status{height:31px;display:flex;align-items:center;gap:6px;padding:0 9px;border:1px solid #d9dad2;border-radius:9px;background:#fff;color:#777a72;font-size:9px;font-weight:750}.runtime-status.passed{border-color:#c9dda0;background:#f6fbe9;color:#668b2d}.runtime-status.error{border-color:#edc0b4;background:#fff1ec;color:#a7482f}
+.status-dot.failed{background:#c9543b;box-shadow:0 0 0 4px #c9543b20}

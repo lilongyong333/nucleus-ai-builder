@@ -141,3 +141,31 @@ test("shows a signed-in account project library with detailed links", async ({ p
   await expect(page.getByText("公开成品链接")).toBeVisible();
   await expect(page.getByRole("link", { name: /打开工作台/ })).toHaveAttribute("href", "/w/e2e-project");
 });
+
+test("recovers a server-side generation after the browser stream disconnects", async ({ page }) => {
+  const completedProject = project();
+  const inFlightProject: Project = {
+    ...completedProject,
+    status: "generating",
+    currentVersionId: null,
+    versions: [],
+    runs: [{ ...completedProject.runs[0], status: "running", completedAt: null, durationMs: null, versionId: null }],
+    messages: completedProject.messages.slice(0, 1),
+  };
+  let reads = 0;
+  let generationPosts = 0;
+  await page.route("**/api/projects/e2e-project", (route) => {
+    reads += 1;
+    return route.fulfill({ json: { project: reads === 1 ? inFlightProject : completedProject } });
+  });
+  await page.route("**/api/generate", (route) => {
+    generationPosts += 1;
+    return route.fulfill({ status: 409, json: { error: "already running" } });
+  });
+
+  await page.goto("/w/e2e-project");
+  await expect(page.locator(".project-title small")).toHaveText("已保存", { timeout: 8000 });
+  await expect(page.getByRole("heading", { name: "结果已恢复" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /版本 v1/ })).toBeVisible();
+  expect(generationPosts).toBe(0);
+});

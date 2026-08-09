@@ -47,6 +47,9 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      const heartbeat = setInterval(() => {
+        if (!generationAbort.signal.aborted) controller.enqueue(encoder.encode("\n"));
+      }, 8_000);
       let sequence = 0;
       let repairCount = 0;
       const finalModel = () => budget.modelsUsed.join(" → ") || model;
@@ -113,6 +116,7 @@ export async function POST(request: Request) {
           await markError(projectId, identity.ownerId, activeGenerationId, message, metrics()).catch(() => undefined);
         }
       } finally {
+        clearInterval(heartbeat);
         if (!generationAbort.signal.aborted) controller.close();
       }
     },
@@ -120,5 +124,5 @@ export async function POST(request: Request) {
       generationAbort.abort();
     },
   });
-  return withWorkspaceIdentity(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } }), identity);
+  return withWorkspaceIdentity(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } }), identity);
 }

@@ -81,6 +81,8 @@ describe("generation route audit failures", () => {
     const body = await response.text();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
     expect(mocks.recordGenerationEvent).toHaveBeenCalledTimes(2);
     expect(mocks.markError).toHaveBeenCalledTimes(1);
     expect(body).toContain('"type":"error"');

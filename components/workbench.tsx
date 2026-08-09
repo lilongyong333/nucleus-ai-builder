@@ -98,6 +98,25 @@ export function Workbench({ projectId }: { projectId: string }) {
         return;
       }
       const message = cause instanceof Error ? cause.message : "生成失败";
+      try {
+        const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
+        const data = await response.json() as { project?: Project };
+        if (response.ok && data.project) {
+          setProject(data.project);
+          setLivePlan(data.project.plan);
+          setLiveQuality(currentQuality(data.project));
+          if (data.project.status === "generating") {
+            setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "连接恢复中", detail: "浏览器连接已中断，服务端仍在生成；完成后会自动同步结果。", state: "working", time: nowTime() }]);
+            setNotice("服务端仍在生成，正在自动恢复");
+            return;
+          }
+          if (data.project.status === "ready" && data.project.versions.length > 0) {
+            setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "结果已恢复", detail: "已从云端同步服务端完成的版本。", state: "done", time: nowTime() }]);
+            setNotice("已恢复服务端生成结果");
+            return;
+          }
+        }
+      } catch { /* keep the original transport error */ }
       setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "生成中断", detail: message, state: "error", time: nowTime() }]);
       setNotice(message);
     } finally {
@@ -126,7 +145,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       setLiveQuality(currentQuality(data.project));
       return data.project as Project;
     }).then((value) => {
-      if (value.versions.length === 0 && !startedRef.current) {
+      if (value.status === "draft" && value.versions.length === 0 && !startedRef.current) {
         startedRef.current = true;
         void runGenerate(value.prompt);
       }
@@ -151,6 +170,39 @@ export function Workbench({ projectId }: { projectId: string }) {
     const timer = window.setTimeout(() => setNotice(""), 4200);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (project?.status !== "generating" || generating) return;
+    let stopped = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
+        const data = await response.json() as { project?: Project };
+        if (!response.ok || !data.project || stopped) throw new Error("项目状态读取失败");
+        if (data.project.status === "generating") {
+          timer = window.setTimeout(() => void poll(), 1800);
+          return;
+        }
+        setProject(data.project);
+        setLivePlan(data.project.plan);
+        setLiveQuality(currentQuality(data.project));
+        if (data.project.status === "ready") {
+          setPreviewError(""); setPreviewState("checking"); setPreviewKey((value) => value + 1);
+          setTimeline((items) => [...items.filter((item) => item.title !== "连接恢复中"), { id: crypto.randomUUID(), agent: "Ray", title: "结果已恢复", detail: "后台生成完成，版本与审计记录已自动同步。", state: "done", time: nowTime() }]);
+          setNotice("后台生成完成，结果已恢复");
+        } else if (data.project.status === "error") {
+          const detail = data.project.runs[0]?.error || "服务端生成失败";
+          setTimeline((items) => [...items.filter((item) => item.title !== "连接恢复中"), { id: crypto.randomUUID(), agent: "Ray", title: "生成中断", detail, state: "error", time: nowTime() }]);
+          setNotice(detail);
+        }
+      } catch {
+        if (!stopped) timer = window.setTimeout(() => void poll(), 3000);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), 1200);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [generating, project?.status, projectId]);
 
   const srcDoc = useMemo(() => project ? composePreview(project.files) : "", [project]);
 
@@ -193,20 +245,22 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   if (loading || !project) return <div className="workbench-loading"><span className="brand-mark"><Boxes size={22} /></span><LoaderCircle className="spin" size={22} /><p>正在打开工作台…</p></div>;
   const latestRun = project.runs[0];
+  const busy = generating || project.status === "generating";
+  const statusLabel = busy ? "生成中" : project.status === "error" ? "生成失败" : project.status === "ready" ? "已保存" : "草稿";
 
   return (
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
       <header className="workbench-topbar">
-        <div className="topbar-left"><button className="icon-button" onClick={() => router.push("/")} aria-label="返回首页"><ArrowLeft size={18} /></button><Link className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></Link><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${generating ? "busy" : ""}`} /> <small>{generating ? "生成中" : "已保存"}</small></div></div>
+        <div className="topbar-left"><button className="icon-button" onClick={() => router.push("/")} aria-label="返回首页"><ArrowLeft size={18} /></button><Link className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></Link><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${busy ? "busy" : project.status === "error" ? "failed" : ""}`} /> <small>{statusLabel}</small></div></div>
         <div className="topbar-actions"><Link href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></Link><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
       </header>
 
       <aside className="agent-panel">
-        <div className="panel-heading"><div><span>智能体团队</span><small>{generating ? "正在协作" : "本轮记录"}</small></div><button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label="收起侧栏"><PanelLeftClose size={17} /></button></div>
-        <div className="agent-roster">{["Iris", "Bob", "Alex", "Ray"].map((agent) => <div key={agent} className={`agent-avatar ${agentTone[agent]}`}>{agent.slice(0, 1)}<span className={generating && timeline.at(-1)?.agent === agent ? "online" : ""} /></div>)}<div className="roster-copy"><strong>{generating ? `${timeline.at(-1)?.agent ?? "Iris"} 正在工作` : "4 位成员已就绪"}</strong><span>Planner · Builder · Reviewer</span></div></div>
+        <div className="panel-heading"><div><span>智能体团队</span><small>{busy ? "正在协作" : "本轮记录"}</small></div><button className="icon-button" onClick={() => setSidebarOpen(false)} aria-label="收起侧栏"><PanelLeftClose size={17} /></button></div>
+        <div className="agent-roster">{["Iris", "Bob", "Alex", "Ray"].map((agent) => <div key={agent} className={`agent-avatar ${agentTone[agent]}`}>{agent.slice(0, 1)}<span className={busy && timeline.at(-1)?.agent === agent ? "online" : ""} /></div>)}<div className="roster-copy"><strong>{busy ? `${timeline.at(-1)?.agent ?? "Iris"} 正在工作` : "4 位成员已就绪"}</strong><span>Planner · Builder · Reviewer</span></div></div>
 
         <div className="timeline">
-          {timeline.length === 0 && !generating && <div className="timeline-empty"><Bot size={22} /><strong>等待新的修改</strong><p>在下方输入需求，团队会继续迭代当前应用。</p></div>}
+          {timeline.length === 0 && !busy && <div className="timeline-empty"><Bot size={22} /><strong>等待新的修改</strong><p>在下方输入需求，团队会继续迭代当前应用。</p></div>}
           {timeline.map((item, index) => <div className={`timeline-item ${item.state}`} key={item.id}><div className="timeline-rail"><span className={`agent-avatar small ${agentTone[item.agent] ?? "ray"}`}>{item.agent.slice(0, 1)}</span>{index < timeline.length - 1 && <i />}</div><div className="timeline-content"><div><strong>{item.agent}</strong><time>{item.time}</time></div><h4>{item.title}{item.state === "working" && <LoaderCircle className="spin" size={13} />}{item.state === "done" && <Check size={13} />}{item.state === "error" && <CircleAlert size={13} />}</h4><p>{item.detail}</p></div></div>)}
         </div>
 
@@ -216,7 +270,7 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {latestRun && <details className={`run-audit-card ${latestRun.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(latestRun.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(latestRun.durationMs)}</strong><small>总耗时</small></span><span><strong>{latestRun.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{latestRun.modelCalls}</strong><small>模型调用</small></span><span><strong>{latestRun.events.length}</strong><small>事件</small></span></div><ol>{latestRun.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol><footer><code>{latestRun.id.slice(0, 8)}</code><span>{latestRun.model}{latestRun.repairCount ? ` · ${latestRun.repairCount} 次修复` : ""}</span></footer></details>}
 
-        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={generating} /><div><span><MessageSquareText size={13} /> {generating ? "生成任务进行中" : "继续迭代"}</span>{generating ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
+        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={busy} /><div><span><MessageSquareText size={13} /> {busy ? "生成任务进行中" : "继续迭代"}</span>{busy ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
       </aside>
 
       {!sidebarOpen && <button className="reopen-sidebar" onClick={() => setSidebarOpen(true)}><Bot size={18} /><span>智能体</span></button>}
@@ -224,7 +278,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       <section className="canvas-panel">
         <div className="canvas-toolbar"><div className="view-tabs"><button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}><Play size={14} />预览</button><button className={activeTab === "code" ? "active" : ""} onClick={() => setActiveTab("code")}><Code2 size={14} />代码</button></div><div className="canvas-actions">{activeTab === "preview" && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{previewState === "checking" ? "启动校验中" : previewState === "passed" ? "启动校验通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}<button onClick={reloadPreview} aria-label="刷新"><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏"><Maximize2 size={15} /></button></div></div>
 
-        {previewError && <div className="runtime-error"><CircleAlert size={16} /><div><strong>预览发现运行错误</strong><span>{previewError}</span></div><button onClick={() => void runGenerate(`请修复这个运行错误，并保持当前功能：${previewError}`)} disabled={generating}><Sparkles size={14} /> 让 Ray 修复</button><button className="icon-button" onClick={() => setPreviewError("")}><X size={14} /></button></div>}
+        {previewError && <div className="runtime-error"><CircleAlert size={16} /><div><strong>预览发现运行错误</strong><span>{previewError}</span></div><button onClick={() => void runGenerate(`请修复这个运行错误，并保持当前功能：${previewError}`)} disabled={busy}><Sparkles size={14} /> 让 Ray 修复</button><button className="icon-button" onClick={() => setPreviewError("")}><X size={14} /></button></div>}
 
         {activeTab === "preview" ? <div className={`preview-stage ${device}`}><div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
       </section>
