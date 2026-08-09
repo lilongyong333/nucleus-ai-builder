@@ -44,3 +44,42 @@ export const generationLimits = sqliteTable("generation_limits", {
   count: integer("count").notNull().default(0),
   expiresAt: text("expires_at").notNull(),
 }, (table) => [index("idx_generation_limits_expires").on(table.expiresAt)]);
+
+export const generationRuns = sqliteTable("generation_runs", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  prompt: text("prompt").notNull(),
+  status: text("status").notNull(),
+  model: text("model").notNull(),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+  durationMs: integer("duration_ms"),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  modelCalls: integer("model_calls").notNull().default(0),
+  repairCount: integer("repair_count").notNull().default(0),
+  versionId: text("version_id"),
+  error: text("error"),
+}, (table) => [index("idx_generation_runs_project_started").on(table.projectId, table.startedAt)]);
+
+export const agentEvents = sqliteTable("agent_events", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  projectId: text("project_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  agent: text("agent").notNull(),
+  phase: text("phase").notNull(),
+  state: text("state").notNull(),
+  title: text("title").notNull(),
+  detail: text("detail").notNull(),
+  durationMs: integer("duration_ms"),
+  model: text("model"),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_agent_events_run_sequence").on(table.runId, table.sequence),
+  index("idx_agent_events_project_created").on(table.projectId, table.createdAt),
+]);

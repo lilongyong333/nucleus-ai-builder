@@ -27,6 +27,45 @@ export type AppQualityReport = {
   summary: string;
 };
 
+export type ModelUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+export type GenerationEvent = {
+  id: string;
+  runId: string;
+  projectId: string;
+  sequence: number;
+  agent: string;
+  phase: string;
+  state: "working" | "done" | "error";
+  title: string;
+  detail: string;
+  durationMs: number | null;
+  model: string | null;
+  usage: ModelUsage;
+  createdAt: string;
+};
+
+export type GenerationRun = {
+  id: string;
+  projectId: string;
+  prompt: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "rejected";
+  model: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  usage: ModelUsage;
+  modelCalls: number;
+  repairCount: number;
+  versionId: string | null;
+  error: string | null;
+  events: GenerationEvent[];
+};
+
 export type ProjectVersion = {
   id: string;
   projectId: string;
@@ -51,12 +90,24 @@ export type Project = {
   createdAt: string;
   updatedAt: string;
   versions: ProjectVersion[];
+  runs: GenerationRun[];
 };
 
-export type AgentEvent =
+export type AgentAudit = {
+  runId: string;
+  eventId: string;
+  phase: string;
+  sequence: number;
+  durationMs?: number;
+  model?: string;
+  usage?: ModelUsage;
+};
+
+export type AgentEvent = (
   | { type: "status"; agent: string; title: string; detail: string; state: "working" | "done" }
   | { type: "plan"; plan: AgentPlan }
   | { type: "file"; path: keyof GeneratedFiles; size: number }
   | { type: "review"; report: AppQualityReport }
   | { type: "complete"; project: Project }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+) & { audit?: AgentAudit };

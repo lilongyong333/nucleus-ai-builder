@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, WandSparkles, X } from "lucide-react";
+import { Activity, ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
 
@@ -175,6 +175,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   }
 
   if (loading || !project) return <div className="workbench-loading"><span className="brand-mark"><Boxes size={22} /></span><LoaderCircle className="spin" size={22} /><p>正在打开工作台…</p></div>;
+  const latestRun = project.runs[0];
 
   return (
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
@@ -195,6 +196,8 @@ export function Workbench({ projectId }: { projectId: string }) {
         {(livePlan || project.plan) && <div className="plan-card"><span><WandSparkles size={14} /> 当前计划</span><strong>{(livePlan || project.plan)?.summary}</strong><ul>{(livePlan || project.plan)?.features.slice(0, 4).map((feature) => <li key={feature}><Check size={11} />{feature}</li>)}</ul></div>}
 
         {liveQuality && <div className={`quality-card ${liveQuality.passed ? "passed" : "failed"}`}><header><span><ShieldCheck size={13} /> Ray 质量门</span><b>{liveQuality.grade}</b></header><div className="quality-score"><strong>{liveQuality.score}</strong><span>/100</span><i><em style={{ width: `${liveQuality.score}%` }} /></i></div><footer><span>{liveQuality.checks.filter((check) => check.severity === "pass").length}/{liveQuality.checks.length} 项通过</span><small>{liveQuality.checks.find((check) => check.severity !== "pass")?.label ?? "语法、安全、交互与体验均已验证"}</small></footer></div>}
+
+        {latestRun && <details className={`run-audit-card ${latestRun.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(latestRun.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(latestRun.durationMs)}</strong><small>总耗时</small></span><span><strong>{latestRun.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{latestRun.modelCalls}</strong><small>模型调用</small></span><span><strong>{latestRun.events.length}</strong><small>事件</small></span></div><ol>{latestRun.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol><footer><code>{latestRun.id.slice(0, 8)}</code><span>{latestRun.model}{latestRun.repairCount ? ` · ${latestRun.repairCount} 次修复` : ""}</span></footer></details>}
 
         <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={generating} /><div><span><MessageSquareText size={13} /> {generating ? "生成任务进行中" : "继续迭代"}</span>{generating ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
       </aside>
@@ -218,3 +221,5 @@ export function Workbench({ projectId }: { projectId: string }) {
 function nowTime() { return new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }); }
 function slugify(value: string) { return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-").replace(/^-|-$/g, "") || "nucleus-app"; }
 function currentQuality(project: Project): AppQualityReport | null { return project.versions.find((version) => version.id === project.currentVersionId)?.quality ?? project.versions[0]?.quality ?? null; }
+function formatDuration(value: number | null) { return value === null ? "—" : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`; }
+function runStatusLabel(status: Project["runs"][number]["status"]) { return ({ running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝" })[status]; }
