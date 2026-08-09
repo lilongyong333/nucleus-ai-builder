@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { artifactProtocolViolation, canonicalFileResponsibilities } from "./artifact-protocol";
 import { createModelBudget, requestChat, type ChatMessage, type GatewayChatResult, type ModelAttempt, type ModelBudget } from "./model-gateway";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { planFromPrompt } from "./planner";
@@ -171,22 +172,17 @@ export async function runIrisAgent(prompt: string, currentFiles: GeneratedFiles 
 export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<ArchitectureArtifact>> {
   const startedAt = Date.now();
   const result = await chat([
-    { role: "system", content: "You are Bob, a senior frontend architect. Produce a concrete architecture handoff for a no-build vanilla HTML/CSS/JavaScript application. Return compact valid JSON only with keys: summary, visualDirection, informationArchitecture (array), stateModel (array), interactionFlow (array), fileResponsibilities (object with index.html, styles.css, script.js), testPlan (array). Make every acceptance criterion implementable and testable. Do not return markdown or reasoning." },
+    { role: "system", content: "You are Bob, a senior frontend architect. Produce a concrete architecture handoff for a no-build vanilla HTML/CSS/JavaScript application. Return compact valid JSON only with keys: summary, visualDirection, informationArchitecture (array), stateModel (array), interactionFlow (array), fileResponsibilities (object with index.html, styles.css, script.js), testPlan (array). The three files are assembled by the platform. They MUST remain separate: index.html contains semantic markup only and MUST NOT inline style or script; styles.css contains CSS only; script.js contains JavaScript only. Never recommend an all-in-one document, inline CSS, or inline JavaScript. Make every acceptance criterion implementable and testable. Do not return markdown or reasoning." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris requirements:\n${JSON.stringify(plan)}${currentFiles ? "\n\nAn existing version will be supplied to Alex for a safe iteration." : ""}` },
   ], runtimeInteger("OPENCODE_GO_BOB_MAX_TOKENS", 7_000, 1_000, 18_000), budget, signal, report ? { stage: { agent: "Bob", phase: "architecture:model", label: "Bob 正在设计状态、交互和测试契约" }, report } : undefined);
   const parsed = parseAgentJson(result, "Bob 没有返回可解析的架构工件");
-  const fileResponsibilities = objectValue(parsed.fileResponsibilities);
   const architecture: ArchitectureArtifact = {
     summary: stringValue(parsed.summary, `以三文件自包含架构实现 ${plan.appName}`, 600),
     visualDirection: stringValue(parsed.visualDirection, plan.design, 500),
     informationArchitecture: stringArray(parsed.informationArchitecture, plan.features, 14),
     stateModel: stringArray(parsed.stateModel, ["单一可预测应用状态", "渲染由状态驱动", "所有用户动作都有明确状态迁移"], 16),
     interactionFlow: stringArray(parsed.interactionFlow, plan.acceptanceCriteria ?? plan.features, 18),
-    fileResponsibilities: {
-      "index.html": stringValue(fileResponsibilities["index.html"], "语义结构、可访问控件和应用容器", 400),
-      "styles.css": stringValue(fileResponsibilities["styles.css"], "产品级视觉、响应式布局、动效和焦点状态", 400),
-      "script.js": stringValue(fileResponsibilities["script.js"], "完整状态机、业务规则、交互、持久化和错误处理", 400),
-    },
+    fileResponsibilities: { ...canonicalFileResponsibilities },
     testPlan: stringArray(parsed.testPlan, plan.testPlan ?? plan.features.map((feature) => `验证：${feature}`), 18),
   };
   return modelResult(architecture, result, startedAt);
@@ -195,19 +191,39 @@ export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles:
 export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: Partial<GeneratedFiles>, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<string>> {
   const startedAt = Date.now();
   const availableFiles = { ...(currentFiles ?? {}), ...files };
-  const context = Object.entries(availableFiles).map(([name, content]) => `--- ${name} ---\n${content}`).join("\n\n");
+  const allowedContextPaths: Array<keyof GeneratedFiles> = path === "index.html"
+    ? ["index.html"]
+    : path === "styles.css"
+      ? ["index.html", "styles.css"]
+      : ["index.html", "styles.css", "script.js"];
+  const context = allowedContextPaths
+    .filter((name) => typeof availableFiles[name] === "string")
+    .map((name) => `--- ${name} (reference only; do not reproduce) ---\n${availableFiles[name]}`)
+    .join("\n\n");
+  const scopedArchitecture = path === "script.js" ? architecture : {
+    summary: architecture.summary,
+    visualDirection: architecture.visualDirection,
+    informationArchitecture: architecture.informationArchitecture,
+    ...(path === "styles.css" ? { stateModel: architecture.stateModel } : {}),
+    fileResponsibility: architecture.fileResponsibilities[path],
+  };
+  const requestContext = path === "script.js"
+    ? `Original request:\n${prompt}`
+    : `Project goal:\n${plan.appName}: ${plan.summary}\nRequired features:\n${plan.features.map((feature) => `- ${feature}`).join("\n")}`;
   const pathRule = path === "index.html"
     ? "Return complete semantic HTML and head metadata. Do not include inline style or script tags. Do not implement CSS or JavaScript in this response. Every visible primary control needs a stable id or data attribute."
     : path === "styles.css"
       ? "Return complete responsive CSS only. Do not output HTML or JavaScript. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, polished empty/error/active states, and no external assets."
       : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, defensive DOM access, and localStorage only for device-local app data. No imports or external libraries.";
   const result = await chat([
-    { role: "system", content: `You are Alex, an elite implementation engineer. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
-    { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Do not output or re-create any other path.` },
-  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 6_000 : path === "styles.css" ? 8_000 : 12_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, codeChatOptions());
+    { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
+    { role: "user", content: `${requestContext}\n\nIris contract:\n${JSON.stringify(plan)}\n\nScoped Bob handoff for ${path}:\n${JSON.stringify(scopedArchitecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Other agents own the other files. Do not output or re-create any other path.` },
+  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, codeChatOptions());
   const content = extractSingleFile(path, result.content);
   if (content.length < 40) throw new AgentOutputError(`${path} 输出过短，未形成可用工件`, result);
   if (content.length > 120_000) throw new AgentOutputError(`${path} 超过 120KB 安全上限`, result);
+  const violation = artifactProtocolViolation(path, content);
+  if (violation) throw new AgentOutputError(violation, result);
   return modelResult(content, result, startedAt);
 }
 
@@ -253,6 +269,10 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
   ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, codeChatOptions());
   const changed = extractGeneratedFiles(result.content);
   if (Object.keys(changed).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
+  for (const [path, content] of Object.entries(changed) as Array<[keyof GeneratedFiles, string]>) {
+    const violation = artifactProtocolViolation(path, content);
+    if (violation) throw new AgentOutputError(`Ray 修复工件无效：${violation}`, result);
+  }
   return modelResult(changed, result, startedAt);
 }
 
@@ -276,10 +296,6 @@ function jsonObject(raw: string): Record<string, unknown> {
   const parsed = JSON.parse(stripped.slice(start, end + 1));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("模型 JSON 工件格式错误");
   return parsed as Record<string, unknown>;
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function arrayObjects(value: unknown): Record<string, unknown>[] {

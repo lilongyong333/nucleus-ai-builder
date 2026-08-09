@@ -54,7 +54,7 @@ export type ModelAttemptRecord = {
   agent: AgentName;
   phase: string;
   model: string;
-  status: "success" | "empty" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
+  status: "success" | "empty" | "incomplete" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
   durationMs: number;
   firstTokenMs: number | null;
   outputChars: number;

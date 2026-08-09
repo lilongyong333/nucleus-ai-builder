@@ -52,6 +52,31 @@ describe("model gateway", () => {
     expect(JSON.parse(String(requestInit?.body))).toMatchObject({ stream: true, stream_options: { include_usage: true } });
   });
 
+  it("fails over when a stream closes without a terminal event", async () => {
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(String(init.body)).model;
+      return model === "primary"
+        ? sse('data: {"choices":[{"delta":{"content":"partial function() {"}}]}\n\n')
+        : sse(
+          'data: {"choices":[{"delta":{"content":"complete"},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        );
+    });
+    const result = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary", "fallback"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), fetcher });
+    expect(result.content).toBe("complete");
+    expect(result.attempts.map((item) => item.status)).toEqual(["incomplete", "success"]);
+  });
+
+  it("rejects finish_reason length as a truncated completion", async () => {
+    const fetcher = vi.fn(async () => sse(
+      'data: {"choices":[{"delta":{"content":"truncated"},"finish_reason":"length"}]}\n\n',
+      'data: [DONE]\n\n',
+    ));
+    const error = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), fetcher }).catch((cause) => cause);
+    expect(error).toBeInstanceOf(ModelGatewayError);
+    expect(error.attempts[0]).toMatchObject({ status: "incomplete", error: "Incomplete model stream (finish_reason=length)" });
+  });
+
   it("fails over when the primary model is unavailable", async () => {
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
       const model = JSON.parse(String(init.body)).model;

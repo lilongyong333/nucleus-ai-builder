@@ -2,7 +2,7 @@ import { addUsage, emptyUsage, normalizeUsage } from "./usage";
 import type { ModelUsage } from "./types";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-export type ModelAttemptStatus = "success" | "empty" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
+export type ModelAttemptStatus = "success" | "empty" | "incomplete" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
 
 export type ModelAttempt = {
   model: string;
@@ -129,13 +129,17 @@ export async function requestChat(input: {
         chatUsage = addUsage(chatUsage, usage);
         input.budget.usage = addUsage(input.budget.usage, usage);
         const content = usableContent({ content: data.content, reasoning_content: data.reasoningContent });
-        attempts.push(attempt(model, content ? "success" : "empty", attemptStartedAt, firstTokenMs, outputChars, response.status, usage, content ? null : "Empty model response"));
+        const completed = Boolean(content) && data.completed;
+        const completionError = content
+          ? `Incomplete model stream${data.finishReason ? ` (finish_reason=${data.finishReason})` : " (missing terminal event)"}`
+          : "Empty model response";
+        attempts.push(attempt(model, completed ? "success" : content ? "incomplete" : "empty", attemptStartedAt, firstTokenMs, outputChars, response.status, usage, completed ? null : completionError));
         if (input.budget.usage.totalTokens > input.budget.maxTotalTokens) {
           attempts[attempts.length - 1] = { ...attempts[attempts.length - 1], status: "budget_exceeded", error: "Token budget exhausted" };
           throw new ModelGatewayError(`Model usage exceeded the ${input.budget.maxTotalTokens} token budget`, attempts, "budget");
         }
-        if (content) return { content, usage: chatUsage, durationMs: Date.now() - startedAt, calls: attempts.length, model, attempts };
-        lastError = `Model ${model} returned empty content`;
+        if (completed) return { content, usage: chatUsage, durationMs: Date.now() - startedAt, calls: attempts.length, model, attempts };
+        lastError = content ? `Model ${model} returned an incomplete stream` : `Model ${model} returned empty content`;
       } catch (error) {
         if (error instanceof ModelGatewayError) throw error;
         if (input.signal?.aborted) {
@@ -157,14 +161,15 @@ export async function requestChat(input: {
   throw new ModelGatewayError(lastError, attempts, "provider");
 }
 
-async function readChatResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<{ content: string; reasoningContent: string; usage: unknown }> {
+async function readChatResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<{ content: string; reasoningContent: string; usage: unknown; completed: boolean; finishReason: string | null }> {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.includes("text/event-stream")) {
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; usage?: unknown };
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string | null }>; usage?: unknown };
     const message = data.choices?.[0]?.message;
+    const finishReason = typeof data.choices?.[0]?.finish_reason === "string" ? data.choices[0].finish_reason : null;
     const content = typeof message?.content === "string" ? message.content : "";
     if (content) onDelta?.({ model, delta: content, totalChars: content.length });
-    return { content, reasoningContent: typeof message?.reasoning_content === "string" ? message.reasoning_content : "", usage: data.usage };
+    return { content, reasoningContent: typeof message?.reasoning_content === "string" ? message.reasoning_content : "", usage: data.usage, completed: finishReason !== "length", finishReason };
   }
 
   if (!response.body) throw new Error(`Model ${model} returned an empty stream`);
@@ -174,17 +179,24 @@ async function readChatResponse(response: Response, model: string, onDelta?: (up
   let content = "";
   let reasoningContent = "";
   let usage: unknown;
+  let sawDone = false;
+  let finishReason: string | null = null;
 
   const consumeLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) return;
     const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") return;
+    if (!payload) return;
+    if (payload === "[DONE]") {
+      sawDone = true;
+      return;
+    }
     const chunk = JSON.parse(payload) as {
-      choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
+      choices?: Array<{ delta?: { content?: string; reasoning_content?: string }; finish_reason?: string | null }>;
       usage?: unknown;
     };
     if (chunk.usage !== undefined) usage = chunk.usage;
+    if (typeof chunk.choices?.[0]?.finish_reason === "string") finishReason = chunk.choices[0].finish_reason;
     const delta = chunk.choices?.[0]?.delta;
     if (typeof delta?.reasoning_content === "string") reasoningContent += delta.reasoning_content;
     if (typeof delta?.content !== "string" || delta.content.length === 0) return;
@@ -201,7 +213,7 @@ async function readChatResponse(response: Response, model: string, onDelta?: (up
     if (done) break;
   }
   if (buffer.trim()) consumeLine(buffer);
-  return { content, reasoningContent, usage };
+  return { content, reasoningContent, usage, completed: finishReason === "stop" || (sawDone && finishReason !== "length"), finishReason };
 }
 
 function reserveCall(budget: ModelBudget, model: string, attempts: ModelAttempt[]) {
