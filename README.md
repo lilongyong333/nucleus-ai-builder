@@ -89,6 +89,7 @@ pnpm build
 
 ## 文档
 
+- [从零到上线：完整教学手册](docs/learning/README.md)
 - [架构与取舍](docs/DESIGN.md)
 - [开发进度与验收记录](docs/PROGRESS.md)
 - [提交说明](docs/SUBMISSION.md)
