@@ -13,7 +13,7 @@
 | 数据持久化 | ✅ | D1 Run、Stage、Artifact、ModelAttempt、Event、Version 与 migration |
 | 版本系统 | ✅ | 自动快照、列表、恢复任意版本 |
 | 发布与导出 | ✅ | `/p/[slug]`、公开链接、ZIP 下载 |
-| 质量验证 | ✅ | 通用 9 项门、贪吃蛇专项契约、模型审查、34 单测、7 浏览器 E2E |
+| 质量验证 | ✅ | 通用 9 项门、三文件协议门、贪吃蛇专项契约、模型审查、41 单测、7 浏览器 E2E |
 | 在线部署 | ✅ | 公网站点、D1、服务端密钥和真实生成均已验证 |
 | 公开源码 | ✅ | GitHub Public 仓库已推送，PDF 和密钥未入库 |
 
@@ -62,7 +62,7 @@
 ## 自动化结果
 
 ```text
-Vitest          34 / 34 passed
+Vitest          41 / 41 passed
 Playwright      7 / 7 passed
 TypeScript      passed
 ESLint          passed
@@ -272,8 +272,10 @@ Production      passed
 - 新增 `generation_artifacts`，对 requirements、architecture、三个代码文件和 quality 做 `(run_id, kind)` 唯一检查点；
 - 新增 `model_attempts`，保存模型、状态、阶段、耗时、首字时间、输出字符数、HTTP 状态、usage 和错误；浏览器中断记为 `cancelled`；
 - 项目 generation lease 与阶段 active-step lease 双重阻止并发；阶段断开后只重跑当前未完成工件；
-- 整个 Run 24 次调用/180K Tokens 硬上限，单阶段 2 次/40K/47 秒；主模型 26 秒并为备用预留 18 秒；达到预算直接终止并保留检查点；
-- 需求/架构/审查使用 `gpt-5.6-luna → glm-5.2`；生产 v22 发现 Luna 在 Alex HTML 阶段会越界生成其他文件，故代码路由改为 `glm-5.2 → gpt-5.6-luna`；HTML/CSS/JS 分别 6K/8K/12K Tokens，代码主窗口 34 秒，修复最高 16K；
+- 整个 Run 24 次调用/180K Tokens 硬上限，单阶段 2 次/40K/52 秒；需求类主模型 26 秒并为备用预留 18 秒，代码类主窗口 34 秒并预留 16 秒；达到预算直接终止并保留检查点；
+- 需求/架构/审查使用 `gpt-5.6-luna → glm-5.2`；生产 v22 发现 Luna 在 Alex HTML 阶段会越界生成其他文件，故代码路由改为 `glm-5.2 → gpt-5.6-luna`；HTML/CSS/JS 分别 4K/6K/14K Tokens，修复最高 16K；
+- Bob 的三文件职责改为平台不可变契约；HTML/CSS/JS 与 Ray 修复工件保存前分别验证跨文件污染、Markdown 残留、完整文档、CSS 括号和 Acorn JavaScript 语法；
+- SSE 只有收到 `[DONE]` 或正常 `finish_reason=stop` 才算完整；连接提前结束或 `finish_reason=length` 记录为 `incomplete`，可在工作台审计并触发备用模型；
 - Ray 同时执行通用确定性质量门、真实模型逐项审查和最多两轮定向修复；贪吃蛇额外要求运行循环、方向控制、场景渲染、食物计分和生命周期证据；
 - migration `0006_familiar_iron_monger.sql` 增加阶段租约、Artifact 和 ModelAttempt 表/索引，运行期 schema 初始化兼容已有 D1。
 
@@ -281,7 +283,7 @@ Production      passed
 
 - TypeScript：通过；
 - ESLint：通过；
-- Vitest：34/34；
+- Vitest：41/41；
 - Chromium Playwright：7/7；
 - Vinext production build：通过，包含 `/api/runs` 和 `/api/runs/:id/step`；
 - `git diff --check`：通过。
@@ -295,3 +297,17 @@ Production      passed
 - Alex `index.html` 三次尝试均收到约 10K–14K 实时字符，但 Luna/备用输出越界包含 CSS/JS，窗口结束仍未完整关闭；
 - Run 产生明确失败终态，只保留 2 个上游 Artifact，代码 0/3、Version v0、发布/下载继续禁用，没有拿 Todo Demo 冒充成果；
 - 这次证据推动按角色模型路由、代码 34 秒主窗口和更强单文件协议，修复后将发布下一 Sites version 再复测。
+
+### v23–v25：协议门、完整流与最终生产通过
+
+- commit `a74323661e4b703bd69dc7f3b814cc1b96bd9472` 将代码动作路由为 `glm-5.2 → gpt-5.6-luna`，发布 Sites v23；生产复测发现 Bob 架构仍允许把 CSS/JS 内联到 HTML，Alex 因矛盾交接再次生成单文件全家桶；
+- commit `68ae3179319380e2a69564dd8bef296463083358` 增加不可变文件职责、工件协议门和 SSE 完整结束检查，发布 Sites v24 / env revision 7；线上协议门正确阻断三次污染，但也暴露把外部 `<script src="script.js">` 误判为内联代码的问题；
+- v24 失败 Run 只保存 Iris/Bob 两个上游工件，代码 0/3、Version v0、发布/下载禁用，证明失败不会污染成品；
+- commit `efa0957d4681bd87a555e218a258fdb2ae061842` 在保存前移除由平台重复注入的 `styles.css` / `script.js` 引用，同时继续阻断真正内联代码；Sites v25 发布成功，环境 revision 7；
+- v25 同一贪吃蛇需求第一轮 HTML 因 Markdown 残留被拒绝，下一阶段尝试自动重试并保存 6KB HTML；CSS 15KB、JavaScript 21KB 均建立独立检查点，JavaScript 通过 Acorn；
+- Ray 前两轮因模型超时/未正常结束保留工件并重试，第三轮通过：15 条功能证据、确定性质量 100/100、A 级，仅保留两条非阻断触屏建议；
+- 最终 Run `f0da0a18…`：`completed`，291 秒，105,797 Tokens，14 次模型调用，14 条 ModelAttempt；`success`、`timeout`、`incomplete` 均在工作台逐条可见；
+- 实际浏览器验收：公开页 Start 后可用 Space 暂停为 `Paused`、再次 Space 恢复为 `Running`、方向键可输入、`R` 重开后为 `Running` 且分数归零；成功版本运行期间没有新增 Console error；
+- v1 已发布到 <https://www.llynb.cc/p/responsive-snake-game-d1bf0e>，项目工作台为 <https://www.llynb.cc/w/d1bf0eb6-4b74-48d0-984e-ebaa773cbb3c>；
+- 最终本地门禁：Vitest 41/41、Playwright 7/7、TypeScript、ESLint、Vinext production build 和 `git diff --check` 全部通过。
+- GitHub Actions `verify` 对提交 `efa0957…` 通过（Linux 构建与 Chromium 测试）。

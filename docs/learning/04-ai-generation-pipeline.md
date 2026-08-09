@@ -170,7 +170,7 @@ Ray 输出 `quality` JSON 工件，包含功能检查、代码证据、阻断错
 | 主模型单次等待 | 26 秒 | 给备用模型预留时间 |
 | 备用预留 | 18 秒 | 主模型卡住时仍有恢复机会 |
 
-每个角色还有输出上限：Iris 6K、Bob 7K、HTML 6K、CSS 8K、JS 12K、Ray 审查 8K、修复 16K Tokens。它们是“最多允许”，不是要求模型输出废话；结构性文件的上限按实际体积收紧，避免模型无意义地越界生成其他文件。
+每个角色还有输出上限：Iris 6K、Bob 7K、HTML 4K、CSS 6K、JS 14K、Ray 审查 8K、修复 16K Tokens。它们是“最多允许”，不是要求模型输出废话；结构性文件的上限按实际体积收紧，JavaScript 保留更大业务逻辑空间。
 
 每个新阶段会读取 Run 已使用的 `model_calls` 和 `total_tokens`，再把剩余额度传给模型网关。达到整轮硬上限会产生可审计的终态，而不是继续重试。
 
@@ -188,6 +188,8 @@ Ray 输出 `quality` JSON 工件，包含功能检查、代码证据、阻断错
 - `qwen3.8-max`、`kimi-k2.7-code` 的长代码探针超过 48 秒窗口。
 
 首次 version 22 生产验收进一步证明“同一个最佳模型不适合所有角色”：Luna 的 Iris/Bob JSON 成功，但在 Alex HTML 阶段越界继续输出 CSS/JS，三次窗口内都没有收尾。系统正确拒绝半成品；随后将代码动作路由给历史长代码协议更稳定的 GLM，并把代码主窗口提高到 34 秒。失败样本保留在 Run 审计中，不删除、不包装成成功。
+
+version 24/25 又补上两层确定性协议：Bob 返回的 `fileResponsibilities` 不再直接被信任；平台固定 HTML/CSS/JS 边界，并在 Artifact 保存前验证 Markdown 残留、内联污染、HTML 完整性、CSS 括号和 JavaScript 语法。模型 SSE 也必须出现正常终止事件；提前断开或 `finish_reason=length` 会成为 `incomplete` ModelAttempt，而不是只因“已经收到文字”就记成功。
 
 这不是永久排行榜。模型列表、套餐权限和延迟会变化，所以规划/审查与代码模型 ID 分别放在服务端环境变量中，代码不绑定某一家模型。
 
@@ -291,7 +293,7 @@ data: {"choices":[{"delta":{"content":"..."}}]}
 
 1. `currentStage` 停在哪里；
 2. 该阶段是否已有 Artifact；
-3. ModelAttempt 是 `timeout`、`http_error`、`empty`、`budget_exceeded` 还是 `cancelled`；
+3. ModelAttempt 是 `timeout`、`incomplete`、`http_error`、`empty`、`budget_exceeded` 还是 `cancelled`；
 4. 首字时间和输出字符数是否说明模型真的开始输出；
 5. Ray 的 deterministic / productChecks / issues 是什么；
 6. Run 是否仍 `running`，还是已经有明确终态；

@@ -284,7 +284,7 @@ glm-5.2 -> qwen3.5-plus
 当前交付在本地和 GitHub CI 同时通过：
 
 ```powershell
-pnpm test             # 当前基线 34/34
+pnpm test             # 当前基线 41/41
 pnpm test:e2e         # 当前基线 7/7 Chromium
 pnpm lint
 pnpm exec tsc --noEmit
@@ -340,6 +340,6 @@ POST /api/runs
   -> finalize -> Version
 ```
 
-每个箭头之间都写入 D1 的 `current_stage`、Artifact、ModelAttempt 和 AgentEvent；浏览器断开时只重跑没有完成的当前阶段。整轮额度提高到 24 次调用/180K Tokens，单阶段仍控制为 2 次/40K/47 秒。当前探针选择 `gpt-5.6-luna → glm-5.2`。
+每个箭头之间都写入 D1 的 `current_stage`、Artifact、ModelAttempt 和 AgentEvent；浏览器断开时只重跑没有完成的当前阶段。整轮额度提高到 24 次调用/180K Tokens，单阶段仍控制为 2 次/40K/52 秒。需求/架构/审查使用 `gpt-5.6-luna → glm-5.2`，代码使用 `glm-5.2 → gpt-5.6-luna`。
 
-这轮本地发布门为 34/34 Vitest、7/7 Playwright、TypeScript、ESLint、production build 和 `git diff --check` 全通过。生产 commit、Sites version 和真实贪吃蛇验收以 `docs/PROGRESS.md` 最后一节为准。
+生产 v22–v25 又依次暴露了跨文件输出、Bob 矛盾交接、截断流误判和外部脚本引用误判。最终把文件职责锁进代码、在保存前检查三文件协议、要求 SSE 正常结束，并只移除平台会重复注入的本地文件引用。最终门禁为 41/41 Vitest、7/7 Playwright、TypeScript、ESLint、production build 和 `git diff --check`；真实贪吃蛇以 Ray 100/A 保存并发布，详细证据见 `docs/PROGRESS.md` 最后一节。

@@ -1,6 +1,6 @@
 # Nucleus 文档中心
 
-> 当前生产运行时代码基线：commit `feccdf10ce462a94b070ae629241cb3110dd4aa4`、Sites production version 16、2026-08-09。教学文档本身可以位于该提交之后，不会改变线上运行时代码。
+> 当前生产运行时代码基线：commit `efa0957d4681bd87a555e218a258fdb2ae061842`、Sites production version 25、environment revision 7、2026-08-10。教学文档提交可以位于该提交之后，不会改变线上运行时代码。
 
 ## 想从零照着做
 
@@ -39,6 +39,8 @@
 - [逐轮开发与生产验收记录](PROGRESS.md)
 - [GitHub Draft PR #2](https://github.com/lilongyong333/nucleus-ai-builder/pull/2)
 - [自定义域名在线站点](https://www.llynb.cc)
+- [本轮真实生成的贪吃蛇成品](https://www.llynb.cc/p/responsive-snake-game-d1bf0e)
+- [贪吃蛇项目工作台与完整审计](https://www.llynb.cc/w/d1bf0eb6-4b74-48d0-984e-ebaa773cbb3c)
 - [Sites 备用地址](https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site)
 
 ## 文档职责

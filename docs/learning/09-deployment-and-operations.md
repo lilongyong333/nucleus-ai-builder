@@ -149,15 +149,19 @@ GET  /p/:slug                  -> 200，预览可交互
 - 浏览器断流能恢复/取消且不会重复 POST；
 - 匿名限流可触发 429。
 
-最终部署为 Sites version 16，环境 revision 3，commit：
+2026-08-10 的最终 P0/P1 生产验收还验证了：全新 v0 不显示预置 Todo；Iris/Bob/三代码文件/Ray/finalize 分阶段落盘；被截断的 SSE 记录为 `incomplete`；三文件协议失败不进入版本；真实贪吃蛇最终以 105,797 Tokens、14 次模型调用、Ray 100/A 保存并完成 Start、暂停、继续、方向键和重开实测。
+
+当前最终部署为 Sites version 25，环境 revision 7，commit：
 
 ```text
-feccdf10ce462a94b070ae629241cb3110dd4aa4
+efa0957d4681bd87a555e218a258fdb2ae061842
 ```
 
 自定义域名：<https://www.llynb.cc>
 
 Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site>
+
+本轮真实生成公开页：<https://www.llynb.cc/p/responsive-snake-game-d1bf0e>
 
 `www.llynb.cc` 直接绑定现有 Sites 项目，而不是在 Railway 再部署一套应用。Cloudflare 中的 `www` 使用 DNS-only CNAME 指向 `custom-domains.chatgpt.site`，并通过 Sites 返回的两条 TXT 完成域名所有权与证书验证。详细步骤、故障判断和回滚见 [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md)。
 
