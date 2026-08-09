@@ -1,5 +1,6 @@
 import { restoreVersion } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
+import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -7,6 +8,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const identity = await resolveWorkspaceIdentity(request, visitor);
     const { id } = await context.params;
+    const role = await projectOrganizationRole(id, identity.ownerId);
+    if (!role || !["owner", "admin", "editor"].includes(role)) return withWorkspaceIdentity(Response.json({ error: "当前组织角色不能恢复版本" }, { status: role ? 403 : 404 }), identity);
     const body = await request.json() as { versionId?: string };
     if (!body.versionId) return withWorkspaceIdentity(Response.json({ error: "缺少版本 ID" }, { status: 400 }), identity);
     const project = await restoreVersion(id, identity.ownerId, body.versionId);

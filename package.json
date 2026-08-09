@@ -12,6 +12,7 @@
     "start": "vinext start",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "eval:fixed": "vitest run lib/app-manifest.eval.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .artifacts",
     "db:generate": "drizzle-kit generate"
   },

@@ -62,7 +62,8 @@
 ## 自动化结果
 
 ```text
-Vitest          41 / 41 passed
+Vitest          70 / 70 passed
+Fixed Eval      25 / 25 passed
 Playwright      7 / 7 passed
 TypeScript      passed
 ESLint          passed
@@ -311,3 +312,47 @@ Production      passed
 - v1 已发布到 <https://www.llynb.cc/p/responsive-snake-game-d1bf0e>，项目工作台为 <https://www.llynb.cc/w/d1bf0eb6-4b74-48d0-984e-ebaa773cbb3c>；
 - 最终本地门禁：Vitest 41/41、Playwright 7/7、TypeScript、ESLint、Vinext production build 和 `git diff --check` 全部通过。
 - GitHub Actions `verify` 对提交 `efa0957…` 通过（Linux 构建与 Chromium 测试）。
+
+## 第十二轮：P2/P3 全栈应用平台与 Lovable 式差异化能力
+
+### 每个生成应用的运行资源
+
+- Bob 的结构化工件新增 Runtime Blueprint；保存 Version 时生成不可变 AppManifest，声明每应用 API、集合 Schema、Auth 模式、依赖、Backend Function 和验收标准；
+- 新增按 `project_id + collection` 强制隔离的 D1 应用数据层、Schema 白名单校验、32KB 单记录上限和 revision 乐观并发控制；
+- 预览与公开应用分别签发哈希化 Access/Refresh Session，工作台 Session 继承组织角色；
+- iframe 注入 `window.nucleus.data.list/create/update/remove`、Auth、能力清单和日志 SDK；
+- 新增运行时证据、最多 5,000 条/约 1.8MB 应用数据备份、恢复前自动检查点和分批 D1 恢复；
+- migration `0007_robust_gravity.sql` 新增 Manifest、Session、Record、Evidence、Backup、Runner、Race、Organization、Approval、Usage 和 Git Integration 表。
+
+### Race、视觉编辑与自动修复
+
+- Race Mode 对可用代码模型并发请求，按 HTML/CSS/JavaScript 的语义、响应式、可访问性、真实交互和 Runtime API 使用确定性评分；
+- 每个候选模型、输出长度、得分和是否入选写入 `race_candidates`，最终候选仍须通过 Ray；
+- iframe Element Picker 返回稳定 selector、计算样式和尺寸；工作台支持即时 Patch，但只有重新进入正式多 Agent Run 并通过 Ray 的修改才会保存为 Version；
+- Console、error、unhandledrejection、DOM 摘要和云端 Runner 证据写入 D1；每个版本最多自动回灌 Ray 一次，Runner 失败由原子 claim 防止重复修复。
+
+### 外部 Runner、Git 与组织控制面
+
+- GitHub Actions workflow_dispatch + `scripts/cloud-eval.mjs` 可访问真实公开 URL、执行安全点击、收集 Console/page/network/截图并签名回调；未发布应用返回 409；
+- 外部 Container Runner 协议可接收源码、npm/pip/system/container 依赖、Backend Function 和 CPU/内存/磁盘/网络限制；Worker 本身不执行任意 Docker；
+- Git Data API 自动建立 Iris/Bob/Alex/Ray 链式分支和 commit，并把最终 Ray 分支合并到默认分支；
+- 新增组织成员/邮箱邀请认领、owner/admin/editor/reviewer/viewer RBAC、发布审批、月 Token 硬预算和用量事件；
+- Git、Playwright、Container 在缺少服务端 Provider 凭据时统一显示 `configuration-required`，不伪装成功；邀请当前只落后端状态，不发送邮件；用量控制不是完整支付计费。
+
+### 第十二轮本地发布门
+
+- Vitest：70/70；
+- 固定 AppManifest Eval：25/25；
+- Chromium Playwright：7/7；
+- TypeScript：通过；
+- ESLint：通过；
+- Vinext production build：通过，识别 26 条页面/API 路由；
+- `scripts/cloud-eval.mjs`：Node 语法检查通过；
+- 大规模端到端生成成功率 Eval 尚未完成，因此 25/25 不能解释为任意应用生成成功率。
+
+### 新增教学文档
+
+- `docs/learning/14-p2-p3-full-stack-platform.md`；
+- `docs/learning/15-race-visual-runner-git.md`；
+- `docs/learning/16-team-operations-observability.md`；
+- `docs/learning/17-p2-p3-deployment-acceptance.md`。

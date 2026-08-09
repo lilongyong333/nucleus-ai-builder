@@ -1,0 +1,81 @@
+name: Generated App Cloud Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Nucleus runner job id
+        required: true
+        type: string
+      target_url:
+        description: Published application URL
+        required: true
+        type: string
+      callback_url:
+        description: Nucleus runner callback endpoint
+        required: true
+        type: string
+      viewport:
+        description: desktop or mobile
+        required: true
+        default: desktop
+        type: choice
+        options:
+          - desktop
+          - mobile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generated-app-eval-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout runner source
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run real browser acceptance
+        id: evaluate
+        continue-on-error: true
+        env:
+          NUCLEUS_EVAL_JOB_ID: ${{ inputs.job_id }}
+          NUCLEUS_EVAL_TARGET_URL: ${{ inputs.target_url }}
+          NUCLEUS_EVAL_CALLBACK_URL: ${{ inputs.callback_url }}
+          NUCLEUS_EVAL_VIEWPORT: ${{ inputs.viewport }}
+          NUCLEUS_RUNNER_CALLBACK_TOKEN: ${{ secrets.NUCLEUS_RUNNER_CALLBACK_TOKEN }}
+        run: node scripts/cloud-eval.mjs
+
+      - name: Upload screenshot, result and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nucleus-cloud-eval-${{ inputs.job_id }}
+          path: test-results/cloud-eval
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce acceptance result
+        if: steps.evaluate.outcome == 'failure'
+        run: exit 1

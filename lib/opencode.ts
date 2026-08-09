@@ -1,11 +1,13 @@
 import { env } from "cloudflare:workers";
+import { normalizeRuntimeBlueprint } from "./app-manifest";
+import { scoreFileCandidate } from "./race-score";
 import { artifactProtocolViolation, canonicalFileResponsibilities, normalizeArtifactContent } from "./artifact-protocol";
-import { createModelBudget, requestChat, type ChatMessage, type GatewayChatResult, type ModelAttempt, type ModelBudget } from "./model-gateway";
+import { createModelBudget, ModelGatewayError, requestChat, type ChatMessage, type GatewayChatResult, type ModelAttempt, type ModelBudget } from "./model-gateway";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { planFromPrompt } from "./planner";
 import { qualityRepairBrief, reviewGeneratedApp, reviewProductContract } from "./quality";
 import { addUsage, emptyUsage } from "./usage";
-import type { AgentName, AgentPlan, AppQualityCheck, AppQualityReport, GeneratedFiles, ModelUsage } from "./types";
+import type { AgentName, AgentPlan, AppQualityCheck, AppQualityReport, AppRuntimeBlueprint, GeneratedFiles, ModelUsage } from "./types";
 
 function runtimeValue(name: string, fallback = ""): string {
   const cloud = env as unknown as Record<string, unknown>;
@@ -120,6 +122,7 @@ export type ArchitectureArtifact = {
   interactionFlow: string[];
   fileResponsibilities: Record<keyof GeneratedFiles, string>;
   testPlan: string[];
+  runtime: AppRuntimeBlueprint;
 };
 
 export type RayReviewArtifact = {
@@ -172,7 +175,7 @@ export async function runIrisAgent(prompt: string, currentFiles: GeneratedFiles 
 export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<ArchitectureArtifact>> {
   const startedAt = Date.now();
   const result = await chat([
-    { role: "system", content: "You are Bob, a senior frontend architect. Produce a concrete architecture handoff for a no-build vanilla HTML/CSS/JavaScript application. Return compact valid JSON only with keys: summary, visualDirection, informationArchitecture (array), stateModel (array), interactionFlow (array), fileResponsibilities (object with index.html, styles.css, script.js), testPlan (array). The three files are assembled by the platform. They MUST remain separate: index.html contains semantic markup only and MUST NOT inline style or script; styles.css contains CSS only; script.js contains JavaScript only. Never recommend an all-in-one document, inline CSS, or inline JavaScript. Make every acceptance criterion implementable and testable. Do not return markdown or reasoning." },
+    { role: "system", content: "You are Bob, a senior full-stack architect. Produce a concrete architecture handoff for a vanilla HTML/CSS/JavaScript application running on the Nucleus platform. Return compact valid JSON only with keys: summary, visualDirection, informationArchitecture (array), stateModel (array), interactionFlow (array), fileResponsibilities (object with index.html, styles.css, script.js), testPlan (array), runtime (object). runtime must contain: collections (array of {name,label,access: owner|public-read|public-write,fields:[{name,type:string|number|boolean|date|json,required,maxLength?}]}), authMode (anonymous|account|mixed), backendFunctions (array of {name,method:GET|POST,path,purpose,status:available|external-runner-required}), dependencies ({npm:[],pip:[],system:[],containers:[]}). Prefer the platform data API for durable product data. Declare dependencies honestly; Python, Java, native packages and containers require the external runner. The three browser files MUST remain separate: index.html contains semantic markup only and MUST NOT inline style or script; styles.css contains CSS only; script.js contains JavaScript only. Never recommend an all-in-one document. Make every acceptance criterion implementable and testable. Do not return markdown or reasoning." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris requirements:\n${JSON.stringify(plan)}${currentFiles ? "\n\nAn existing version will be supplied to Alex for a safe iteration." : ""}` },
   ], runtimeInteger("OPENCODE_GO_BOB_MAX_TOKENS", 7_000, 1_000, 18_000), budget, signal, report ? { stage: { agent: "Bob", phase: "architecture:model", label: "Bob 正在设计状态、交互和测试契约" }, report } : undefined);
   const parsed = parseAgentJson(result, "Bob 没有返回可解析的架构工件");
@@ -184,11 +187,12 @@ export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles:
     interactionFlow: stringArray(parsed.interactionFlow, plan.acceptanceCriteria ?? plan.features, 18),
     fileResponsibilities: { ...canonicalFileResponsibilities },
     testPlan: stringArray(parsed.testPlan, plan.testPlan ?? plan.features.map((feature) => `验证：${feature}`), 18),
+    runtime: normalizeRuntimeBlueprint(parsed.runtime, prompt, plan),
   };
   return modelResult(architecture, result, startedAt);
 }
 
-export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: Partial<GeneratedFiles>, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<string>> {
+export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: Partial<GeneratedFiles>, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void, agentOptions: { models?: string[] } = {}): Promise<AgentModelResult<string>> {
   const startedAt = Date.now();
   const availableFiles = { ...(currentFiles ?? {}), ...files };
   const allowedContextPaths: Array<keyof GeneratedFiles> = path === "index.html"
@@ -214,17 +218,54 @@ export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: strin
     ? "Return complete semantic HTML and head metadata. Do not include inline style or script tags. Do not implement CSS or JavaScript in this response. Every visible primary control needs a stable id or data attribute."
     : path === "styles.css"
       ? "Return complete responsive CSS only. Do not output HTML or JavaScript. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, polished empty/error/active states, and no external assets."
-      : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, defensive DOM access, and localStorage only for device-local app data. No imports or external libraries.";
+      : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, and defensive DOM access. The platform injects window.nucleus.auth and async window.nucleus.data.list/create/update/remove; when Bob declares runtime collections, use that API for durable product records and reserve localStorage for device-local preferences or an offline fallback. No imports or external libraries.";
   const result = await chat([
     { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
     { role: "user", content: `${requestContext}\n\nIris contract:\n${JSON.stringify(plan)}\n\nScoped Bob handoff for ${path}:\n${JSON.stringify(scopedArchitecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Other agents own the other files. Do not output or re-create any other path.` },
-  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, codeChatOptions());
+  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, { ...codeChatOptions(), ...(agentOptions.models ? { models: agentOptions.models } : {}) });
   const content = normalizeArtifactContent(path, extractSingleFile(path, result.content));
   if (content.length < 40) throw new AgentOutputError(`${path} 输出过短，未形成可用工件`, result);
   if (content.length > 120_000) throw new AgentOutputError(`${path} 超过 120KB 安全上限`, result);
   const violation = artifactProtocolViolation(path, content);
   if (violation) throw new AgentOutputError(violation, result);
   return modelResult(content, result, startedAt);
+}
+
+export async function runAlexFileRaceAgent(path: keyof GeneratedFiles, prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: Partial<GeneratedFiles>, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budgetFactory: () => ModelBudget, report?: (event: GenerationProgress) => void): Promise<{
+  result: AgentModelResult<string>;
+  candidates: Array<{ model: string; artifact: string; score: number; selected: boolean }>;
+}> {
+  const startedAt = Date.now();
+  const models = activeCodeModels().slice(0, 3);
+  if (models.length < 2) {
+    const result = await runAlexFileAgent(path, prompt, plan, architecture, files, currentFiles, signal, budgetFactory(), report, { models });
+    return { result, candidates: [{ model: result.model, artifact: result.artifact, score: scoreFileCandidate(path, result.artifact), selected: true }] };
+  }
+  const settled = await Promise.all(models.map(async (model) => {
+    try {
+      const result = await runAlexFileAgent(path, prompt, plan, architecture, files, currentFiles, signal, budgetFactory(), report ? (event) => report({ ...event, label: `${model} · ${event.label}` }) : undefined, { models: [model] });
+      return { model, result, error: null as unknown };
+    } catch (error) {
+      return { model, result: null, error };
+    }
+  }));
+  const successes = settled.filter((item): item is { model: string; result: AgentModelResult<string>; error: null } => Boolean(item.result));
+  if (successes.length === 0) throw settled[0]?.error instanceof Error ? settled[0].error : new Error(`Race Mode 没有模型成功生成 ${path}`);
+  const scored = successes.map((item) => ({ ...item, score: scoreFileCandidate(path, item.result.artifact) })).sort((a, b) => b.score - a.score || b.result.artifact.length - a.result.artifact.length);
+  const winner = scored[0];
+  const failedAttempts = settled.flatMap((item) => item.result ? [] : attemptsFromAgentError(item.error));
+  const attempts = [...successes.flatMap((item) => item.result.attempts), ...failedAttempts];
+  const result: AgentModelResult<string> = {
+    ...winner.result,
+    durationMs: Date.now() - startedAt,
+    modelCalls: attempts.length,
+    usage: addUsage(...attempts.map((attempt) => attempt.usage)),
+    attempts,
+  };
+  return {
+    result,
+    candidates: scored.map((item) => ({ model: item.result.model, artifact: item.result.artifact, score: item.score, selected: item === winner })),
+  };
 }
 
 export async function runRayReviewAgent(prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: GeneratedFiles, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<RayReviewArtifact>> {
@@ -281,6 +322,12 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
 
 function modelResult<T>(artifact: T, result: GatewayChatResult, startedAt: number): AgentModelResult<T> {
   return { artifact, raw: result.content, usage: result.usage, durationMs: Date.now() - startedAt, modelCalls: result.calls, model: result.model, attempts: result.attempts };
+}
+
+function attemptsFromAgentError(error: unknown): ModelAttempt[] {
+  if (error instanceof AgentOutputError) return error.result.attempts;
+  if (error instanceof ModelGatewayError) return error.attempts;
+  return [];
 }
 
 function parseAgentJson(result: GatewayChatResult, message: string): Record<string, unknown> {

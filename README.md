@@ -35,6 +35,14 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 - ZIP 源码下载
 - 游客直接体验，无登录门槛
 - 公开生成接口按匿名指纹每小时限 8 次，避免套餐被刷
+- 每个正式版本生成 AppManifest，并拥有独立 API 基路径、数据 Schema 与哈希化 Auth Session
+- 生成应用通过 `window.nucleus.data` 使用 D1 持久化 CRUD、乐观并发控制、日志和备份恢复
+- Race Mode 多代码模型并行候选、确定性评分、择优和候选审计
+- 预览 DOM 元素选择、即时视觉 Patch 与正式多 Agent 局部改版
+- Console/Runtime/云端浏览器证据自动写回，失败可原子领取并交给 Ray 修复
+- 组织成员、RBAC、发布审批、Token/模型调用/数据库写入用量控制
+- GitHub Iris/Bob/Alex/Ray 分支自动化与合并 Provider
+- GitHub Actions Playwright 和外部 npm/pip/system/container Runner 协议；缺少凭据时明确显示 `configuration-required`
 
 ## 技术栈
 
@@ -100,9 +108,9 @@ pnpm build
 
 ## 工程取舍
 
-本次交付把生成物限制为无构建步骤的前端三文件应用。相比在演示环境里启动任意 Node 容器，这个边界明显降低了冷启动、依赖安装和恶意代码风险，同时仍能覆盖表单、看板、计时器、数据面板和小游戏等高频场景。
+默认生成物仍是无构建步骤的浏览器三文件应用，但现在每个正式版本同时拥有 AppManifest、运行时 API、项目命名空间 Schema、Auth、日志与备份。这样既保留秒级预览与 sandbox 安全边界，又让生成应用的数据在刷新和跨会话后真实存在。
 
-当前不支持生成后端、安装任意 npm 包或执行服务器代码。这是有意识的 MVP 范围，不是把静态截图当成功能。
+Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker。npm、pip、系统包、Node/Python/Java 容器由受限的外部 Runner Provider 执行；仓库已经实现任务、权限、限额、回调和审计协议，但没有附带托管容器集群。D1 隔离是严格的每项目逻辑命名空间，不是每应用动态创建一个物理 D1 实例。外部 Provider 未配置时产品会显示 `configuration-required`，不会用假成功掩盖边界。
 
 ## 文档
 

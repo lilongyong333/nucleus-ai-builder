@@ -32,6 +32,10 @@ export async function resolveWorkspaceIdentity(request: Request, visitor = resol
   const account = readAccountIdentity(request);
   const ownerId = account ? accountOwnerId(account.userId) : visitor.id;
   if (account && visitor.id !== ownerId) await adoptVisitorProjects(visitor.id, ownerId);
+  if (account) {
+    const { claimOrganizationInvites } = await import("./organization-db");
+    await claimOrganizationInvites(ownerId, account.email);
+  }
   return { ownerId, visitor, account };
 }
 

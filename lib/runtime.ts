@@ -1,4 +1,4 @@
-import type { GeneratedFiles } from "./types";
+import type { AppManifest, AppRuntimeActor, GeneratedFiles } from "./types";
 
 const MAX_FILE_SIZE = 120_000;
 
@@ -33,11 +33,64 @@ export function normalizeGeneratedFiles(input: unknown): GeneratedFiles {
   return result;
 }
 
-export function composePreview(files: GeneratedFiles): string {
+export type PreviewRuntimeOptions = {
+  projectId?: string;
+  versionId?: string | null;
+  token?: string;
+  actor?: AppRuntimeActor | null;
+  manifest?: AppManifest | null;
+  source?: "preview" | "published";
+};
+
+export function composePreview(files: GeneratedFiles, options: PreviewRuntimeOptions = {}): string {
   const style = files["styles.css"].replace(/<\/style/gi, "<\\/style");
   const script = files["script.js"].replace(/<\/script/gi, "<\\/script");
   let html = files["index.html"];
-  const runtime = `<script>(function(){try{var k='__nucleus_probe__';localStorage.setItem(k,'1');localStorage.removeItem(k)}catch(e){var data={};Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:function(k){return Object.prototype.hasOwnProperty.call(data,k)?data[k]:null},setItem:function(k,v){data[k]=String(v)},removeItem:function(k){delete data[k]},clear:function(){data={}},key:function(i){return Object.keys(data)[i]||null},get length(){return Object.keys(data).length}}})}})();window.__nucleusRuntimeFailed=false;(function(){var emitted=0;function printable(value){if(typeof value==='string')return value;try{return JSON.stringify(value)}catch(e){return String(value)}}['log','info','warn','error'].forEach(function(level){var original=console[level];console[level]=function(){var args=Array.prototype.slice.call(arguments);if(emitted<200){emitted+=1;parent.postMessage({source:'nucleus-preview',type:'console',level:level,message:args.map(printable).join(' ')},'*')}return original.apply(console,args)}})})();window.addEventListener('error',function(e){window.__nucleusRuntimeFailed=true;parent.postMessage({source:'nucleus-preview',type:'error',message:e.message},'*')});window.addEventListener('unhandledrejection',function(e){window.__nucleusRuntimeFailed=true;parent.postMessage({source:'nucleus-preview',type:'error',message:String(e.reason)},'*')});window.addEventListener('DOMContentLoaded',function(){setTimeout(function(){if(!window.__nucleusRuntimeFailed)parent.postMessage({source:'nucleus-preview',type:'ready'},'*')},0)},{once:true});</script>`;
+  const config = JSON.stringify({
+    projectId: options.projectId ?? null,
+    versionId: options.versionId ?? null,
+    token: options.token ?? null,
+    actor: options.actor ?? null,
+    manifest: options.manifest ?? null,
+    source: options.source ?? "preview",
+    basePath: options.projectId ? `/api/app-runtime/${options.projectId}` : null,
+  }).replace(/<\//g, "<\\/");
+  const runtime = `<script>(function(){
+var config=${config};
+try{var probe='__nucleus_probe__';localStorage.setItem(probe,'1');localStorage.removeItem(probe)}catch(e){var memory={};Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:function(k){return Object.prototype.hasOwnProperty.call(memory,k)?memory[k]:null},setItem:function(k,v){memory[k]=String(v)},removeItem:function(k){delete memory[k]},clear:function(){memory={}},key:function(i){return Object.keys(memory)[i]||null},get length(){return Object.keys(memory).length}}})}
+window.__nucleusRuntimeFailed=false;
+var eventQueue=[];var eventTimer=null;var emitted=0;
+function printable(value){if(typeof value==='string')return value;try{return JSON.stringify(value)}catch(e){return String(value)}}
+function evidence(){var headings=Array.prototype.slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,12).map(function(el){return el.textContent.trim().slice(0,120)});var controls=Array.prototype.slice.call(document.querySelectorAll('button,input,select,textarea,a')).slice(0,30).map(function(el){return {tag:el.tagName.toLowerCase(),text:(el.textContent||el.getAttribute('aria-label')||el.getAttribute('placeholder')||'').trim().slice(0,100),id:el.id||null}});return {title:document.title,viewport:{width:innerWidth,height:innerHeight},headings:headings,controls:controls,html:(document.body&&document.body.innerHTML||'').slice(0,6000)}}
+function flushEvents(){eventTimer=null;if(!config.basePath||!config.token||eventQueue.length===0)return;var events=eventQueue.splice(0,30);fetch(config.basePath+'/events',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+config.token},body:JSON.stringify({versionId:config.versionId,source:config.source,events:events})}).catch(function(){eventQueue=events.concat(eventQueue).slice(0,60)})}
+function queueEvent(level,message,extra){if(!config.token)return;eventQueue.push({level:level,message:String(message).slice(0,2000),evidence:extra||{}});if(eventQueue.length>=20)flushEvents();else if(!eventTimer)eventTimer=setTimeout(flushEvents,900)}
+async function api(path,init){if(!config.basePath||!config.token)throw new Error('Nucleus runtime API is not available for this preview');var response=await fetch(config.basePath+path,Object.assign({},init||{},{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+config.token},init&&init.headers||{})}));var data=response.status===204?null:await response.json().catch(function(){return null});if(!response.ok)throw new Error(data&&data.error||('Runtime API '+response.status));return data}
+window.nucleus={
+  manifest:config.manifest,
+  auth:{current:config.actor,ready:Promise.resolve(config.actor)},
+  data:{
+    list:async function(collection,query){var params=new URLSearchParams(query||{});var data=await api('/records/'+encodeURIComponent(collection)+(params.toString()?'?'+params:''));return data.records},
+    create:async function(collection,value){var data=await api('/records/'+encodeURIComponent(collection),{method:'POST',body:JSON.stringify(value)});return data.record},
+    update:async function(collection,id,value){var data=await api('/records/'+encodeURIComponent(collection)+'/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(value)});return data.record},
+    remove:async function(collection,id){await api('/records/'+encodeURIComponent(collection)+'/'+encodeURIComponent(id),{method:'DELETE'});return true}
+  },
+  logs:{info:function(message,extra){queueEvent('info',message,extra)},warn:function(message,extra){queueEvent('warn',message,extra)},error:function(message,extra){queueEvent('error',message,extra)}},
+  capabilities:config.manifest&&config.manifest.capabilities||{}
+};
+['log','info','warn','error'].forEach(function(level){var original=console[level];console[level]=function(){var args=Array.prototype.slice.call(arguments);var message=args.map(printable).join(' ');if(emitted<200){emitted+=1;parent.postMessage({source:'nucleus-preview',type:'console',level:level,message:message},'*');queueEvent(level==='log'?'info':level,message,{console:true})}return original.apply(console,args)}});
+window.addEventListener('error',function(e){window.__nucleusRuntimeFailed=true;var detail={stack:e.error&&e.error.stack||null,filename:e.filename||null,line:e.lineno||null,column:e.colno||null,dom:evidence()};parent.postMessage({source:'nucleus-preview',type:'error',message:e.message,detail:detail},'*');queueEvent('error',e.message,detail)});
+window.addEventListener('unhandledrejection',function(e){window.__nucleusRuntimeFailed=true;var message=printable(e.reason);var detail={stack:e.reason&&e.reason.stack||null,dom:evidence()};parent.postMessage({source:'nucleus-preview',type:'error',message:message,detail:detail},'*');queueEvent('error',message,detail)});
+var picker=false;var hover=null;var overlay=null;
+function selectorFor(el){if(el.id)return '#'+CSS.escape(el.id);var test=el.getAttribute('data-testid');if(test)return '[data-testid="'+CSS.escape(test)+'"]';var parts=[];while(el&&el.nodeType===1&&el!==document.body){var part=el.tagName.toLowerCase();var parentEl=el.parentElement;if(parentEl){var siblings=Array.prototype.filter.call(parentEl.children,function(child){return child.tagName===el.tagName});if(siblings.length>1)part+=':nth-of-type('+(siblings.indexOf(el)+1)+')'}parts.unshift(part);el=parentEl;if(parts.length>=6)break}return 'body > '+parts.join(' > ')}
+function describe(el){var rect=el.getBoundingClientRect();var computed=getComputedStyle(el);var attrs={};['id','class','role','aria-label','data-testid'].forEach(function(name){var value=el.getAttribute(name);if(value)attrs[name]=value.slice(0,240)});return {selector:selectorFor(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,500),attributes:attrs,rect:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},styles:{color:computed.color,backgroundColor:computed.backgroundColor,fontSize:computed.fontSize,fontWeight:computed.fontWeight,borderRadius:computed.borderRadius,padding:computed.padding,margin:computed.margin}}}
+function ensureOverlay(){if(overlay)return;overlay=document.createElement('div');overlay.setAttribute('data-nucleus-overlay','true');overlay.style.cssText='position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #4968ff;background:rgba(73,104,255,.08);box-shadow:0 0 0 1px rgba(255,255,255,.9);display:none';document.documentElement.appendChild(overlay)}
+function moveOverlay(el){ensureOverlay();var rect=el.getBoundingClientRect();overlay.style.display='block';overlay.style.left=rect.left+'px';overlay.style.top=rect.top+'px';overlay.style.width=rect.width+'px';overlay.style.height=rect.height+'px'}
+function hoverHandler(event){if(!picker)return;var target=event.target;if(!(target instanceof Element)||target===overlay||target.closest('[data-nucleus-overlay]'))return;hover=target;moveOverlay(target)}
+function clickHandler(event){if(!picker||!hover)return;event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();var description=describe(hover);picker=false;if(overlay)overlay.style.display='none';document.documentElement.style.cursor='';parent.postMessage({source:'nucleus-preview',type:'element-selected',element:description},'*')}
+document.addEventListener('mouseover',hoverHandler,true);document.addEventListener('click',clickHandler,true);
+window.addEventListener('message',function(event){var data=event.data||{};if(data.source!=='nucleus-host')return;if(data.type==='picker'){picker=Boolean(data.enabled);document.documentElement.style.cursor=picker?'crosshair':'';if(!picker&&overlay)overlay.style.display='none'}if(data.type==='visual-patch'&&typeof data.selector==='string'){var el=document.querySelector(data.selector);if(!el)return;if(typeof data.text==='string')el.textContent=data.text;if(data.styles&&typeof data.styles==='object')Object.keys(data.styles).forEach(function(key){if(typeof data.styles[key]==='string')el.style[key]=data.styles[key]});moveOverlay(el);parent.postMessage({source:'nucleus-preview',type:'visual-patch-applied',element:describe(el)},'*')}});
+window.addEventListener('DOMContentLoaded',function(){setTimeout(function(){var detail=evidence();if(!window.__nucleusRuntimeFailed)parent.postMessage({source:'nucleus-preview',type:'ready',detail:detail},'*');queueEvent('info','应用启动完成',{ready:true,detail:detail})},0)},{once:true});
+})();</script>`;
   const styleTag = `<style>${style}</style>`;
   const scriptTag = `<script>${script}</script>`;
   html = html.includes("</head>") ? html.replace("</head>", `${styleTag}${runtime}</head>`) : `${styleTag}${runtime}${html}`;

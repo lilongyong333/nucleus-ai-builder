@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** 可恢复真实多 Agent 状态机已经完成本地发布门；34 个 Vitest、7 个 Chromium E2E、ESLint、TypeScript 和生产构建全部通过。Sites production version 号、Git commit 和线上真实生成证据会在正式发布后写入 `docs/PROGRESS.md`，不要用旧文档中的历史 version 判断线上是否最新。
+> **当前验证基线：** 可恢复多 Agent 状态机与 P2/P3 全栈控制面已经完成本地发布门；70 个 Vitest、25 项固定 Manifest Eval、7 个 Chromium E2E、ESLint、TypeScript 和生产构建全部通过。Sites production version、Git commit 和线上真实证据会在正式发布后写入 `docs/PROGRESS.md`，不要用旧文档中的历史 version 判断线上是否最新。
 
 ## 先看结论
 
@@ -44,7 +44,11 @@ Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.si
 | 11 | [继续开发练习](11-learning-path-and-exercises.md) | 零基础按什么顺序改代码，如何避免越改越乱 |
 | 12 | [演示、答辩与术语](12-demo-interview-and-glossary.md) | 怎么讲项目，面试官追问时如何回答 |
 | 13 | [从零到生产落地手册](13-zero-to-production-runbook.md) | 怎样克隆运行、按提交重建、上 GitHub、配 D1/模型并部署验收 |
-| 14 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
+| 14 | [P2/P3 全栈平台升级](14-p2-p3-full-stack-platform.md) | 每应用 API、Schema、Auth、数据、日志和备份如何真正工作 |
+| 15 | [Race、可视化编辑、Runner 与 Git](15-race-visual-runner-git.md) | 多模型择优、DOM 局部修改、云端点击和 Agent 分支如何串起来 |
+| 16 | [团队协作与生产运维](16-team-operations-observability.md) | RBAC、审批、用量、监控、备份和故障恢复如何实现 |
+| 17 | [P2/P3 部署与验收 Runbook](17-p2-p3-deployment-acceptance.md) | 如何配置 Provider、跑发布门、上线验收并诚实说明边界 |
+| 18 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
 
 如果你现在只想“照着做出来”，先读 00、13、07、09 和自定义域名文档；如果你想真正理解代码，再按 01–12 顺序阅读。
 

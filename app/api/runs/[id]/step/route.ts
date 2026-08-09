@@ -1,8 +1,9 @@
-import { acquireGenerationStep, getProject, incrementGenerationRepair, listGenerationArtifacts, markError, recordModelAttempts, recordNextGenerationEvent, releaseGenerationStep, saveGeneration, saveGenerationArtifact, updateGenerationStage, type GenerationMetrics } from "@/lib/db";
+import { acquireGenerationStep, getProject, incrementGenerationRepair, listGenerationArtifacts, markError, recordModelAttempts, recordNextGenerationEvent, recordRaceCandidates, releaseGenerationStep, saveGeneration, saveGenerationArtifact, updateGenerationStage, type GenerationMetrics } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
 import { ModelGatewayError, type ModelAttempt } from "@/lib/model-gateway";
-import { AgentOutputError, createStepBudget, generationBudgetLimits, runAlexFileAgent, runBobAgent, runIrisAgent, runRayRepairAgent, runRayReviewAgent, type AgentModelResult, type ArchitectureArtifact, type RayReviewArtifact } from "@/lib/opencode";
+import { AgentOutputError, createStepBudget, generationBudgetLimits, runAlexFileAgent, runAlexFileRaceAgent, runBobAgent, runIrisAgent, runRayRepairAgent, runRayReviewAgent, type AgentModelResult, type ArchitectureArtifact, type RayReviewArtifact } from "@/lib/opencode";
 import { normalizeGeneratedFiles } from "@/lib/runtime";
+import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, AgentName, AgentPlan, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
 
@@ -30,6 +31,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const project = await getProject(projectId, identity.ownerId);
   const run = project?.runs.find((item) => item.id === runId);
   if (!project || !run) return withWorkspaceIdentity(Response.json({ error: "Run 不存在或无权访问" }, { status: 404 }), identity);
+  const role = await projectOrganizationRole(projectId, identity.ownerId);
+  if (!role || !["owner", "admin", "editor"].includes(role)) return withWorkspaceIdentity(Response.json({ error: "当前组织角色不能执行生成步骤" }, { status: 403 }), identity);
   if (run.status !== "running" || project.status !== "generating") return withWorkspaceIdentity(Response.json({ error: "Run 已结束", project }, { status: 409 }), identity);
   const stepToken = await acquireGenerationStep(projectId, identity.ownerId, runId);
   if (!stepToken) return withWorkspaceIdentity(Response.json({ error: "当前阶段正在执行，请稍后同步", retryable: true }, { status: 409, headers: { "Retry-After": "2" } }), identity);
@@ -93,8 +96,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             const result = await runBobAgent(run.prompt, plan, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress);
             await persistResult(runId, projectId, "Bob", stage, result);
             const artifact = await saveGenerationArtifact(runId, projectId, "Bob", "architecture", JSON.stringify(result.artifact));
+            const manifestArtifact = await saveGenerationArtifact(runId, projectId, "Bob", "manifest", JSON.stringify(result.artifact.runtime));
             await status("Bob", stage, "架构工件完成", `${result.artifact.stateModel.length} 个状态约束 · ${result.artifact.testPlan.length} 条测试策略`, "done", result);
             emit({ type: "artifact", artifact });
+            emit({ type: "artifact", artifact: manifestArtifact });
             await finishStep(runId, projectId, stage, "implementation:index.html", emit);
           } else if (stage.startsWith("implementation:")) {
             const path = stage.slice("implementation:".length) as keyof GeneratedFiles;
@@ -102,8 +107,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             const architecture = parseArtifact<ArchitectureArtifact>(artifactMap, "architecture");
             const partial = filesFromArtifacts(artifactMap, false);
             await status("Alex", stage, `生成 ${path}`, architecture.fileResponsibilities[path], "working");
-            const result = await runAlexFileAgent(path, run.prompt, plan, architecture, partial, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress);
+            const race = run.mode === "race"
+              ? await runAlexFileRaceAgent(path, run.prompt, plan, architecture, partial, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget, reportProgress)
+              : null;
+            const result = race?.result ?? await runAlexFileAgent(path, run.prompt, plan, architecture, partial, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress);
             await persistResult(runId, projectId, "Alex", stage, result);
+            if (race) {
+              await recordRaceCandidates(runId, projectId, stage, race.candidates);
+              await status("Alex", `${stage}:race`, "Race Mode 已择优", `${race.candidates.length} 个模型并行候选 · 选中 ${result.model}`, "done", result);
+            }
             const artifact = await saveGenerationArtifact(runId, projectId, "Alex", path, result.artifact);
             await status("Alex", stage, `${path} 已保存`, `${Math.max(1, Math.round(result.artifact.length / 1000))} KB · 已建立断点`, "done", result);
             emit({ type: "file", path, size: result.artifact.length });
@@ -142,6 +154,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             await finishStep(runId, projectId, stage, "quality", emit);
           } else if (stage === "finalize") {
             const plan = parseArtifact<AgentPlan>(artifactMap, "requirements");
+            const architecture = parseArtifact<ArchitectureArtifact>(artifactMap, "architecture");
             const review = parseArtifact<RayReviewArtifact>(artifactMap, "quality");
             if (!review.passed) throw new TerminalWorkflowError("最后一次 Ray 审查尚未通过，拒绝保存版本");
             const files = normalizeGeneratedFiles(filesFromArtifacts(artifactMap, true));
@@ -151,7 +164,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             await status("Ray", stage, "保存可回滚版本", "所有 Agent 工件和质量证据已齐备，正在原子提交", "working");
             const metrics: GenerationMetrics = { usage: freshRun.usage, modelCalls: freshRun.modelCalls, repairCount: freshRun.repairCount, durationMs: Date.now() - Date.parse(freshRun.startedAt), model: freshRun.model };
             const quality = { ...review.deterministic, summary: `${review.summary}；${review.functionalChecks.filter((item) => item.passed).length}/${review.functionalChecks.length || 0} 条功能证据通过` };
-            const saved = await saveGeneration(projectId, identity.ownerId, runId, plan, files, review.summary || `完成 ${plan.appName}`, freshRun.model, quality, metrics);
+            const saved = await saveGeneration(projectId, identity.ownerId, runId, plan, files, review.summary || `完成 ${plan.appName}`, freshRun.model, quality, metrics, architecture.runtime);
             emit({ type: "complete", project: saved });
           } else {
             const fresh = await getProject(projectId, identity.ownerId);

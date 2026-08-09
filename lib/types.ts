@@ -4,6 +4,215 @@ export type GeneratedFiles = {
   "script.js": string;
 };
 
+export type RuntimeFieldType = "string" | "number" | "boolean" | "date" | "json";
+
+export type AppCollectionField = {
+  name: string;
+  type: RuntimeFieldType;
+  required: boolean;
+  maxLength?: number;
+  default?: string | number | boolean | null;
+};
+
+export type AppCollectionSchema = {
+  name: string;
+  label: string;
+  access: "owner" | "public-read" | "public-write";
+  fields: AppCollectionField[];
+};
+
+export type AppBackendFunction = {
+  name: string;
+  method: "GET" | "POST";
+  path: string;
+  purpose: string;
+  status: "available" | "external-runner-required";
+};
+
+export type AppRuntimeBlueprint = {
+  collections: AppCollectionSchema[];
+  authMode: "anonymous" | "account" | "mixed";
+  backendFunctions: AppBackendFunction[];
+  dependencies: {
+    npm: string[];
+    pip: string[];
+    system: string[];
+    containers: string[];
+  };
+};
+
+export type AppManifest = {
+  schemaVersion: 1;
+  projectId: string;
+  versionId: string;
+  appName: string;
+  createdAt: string;
+  backend: {
+    basePath: string;
+    functions: AppBackendFunction[];
+  };
+  database: {
+    provider: "nucleus-d1";
+    isolation: "project-namespace";
+    collections: AppCollectionSchema[];
+  };
+  auth: {
+    provider: "nucleus-app-session";
+    mode: AppRuntimeBlueprint["authMode"];
+    sessionTtlSeconds: number;
+  };
+  dependencies: AppRuntimeBlueprint["dependencies"] & {
+    execution: "edge-native" | "external-runner-required";
+  };
+  acceptance: {
+    checks: string[];
+    browserJobRequired: boolean;
+  };
+  capabilities: {
+    dataApi: "ready";
+    auth: "ready";
+    runtimeLogs: "ready";
+    backups: "ready";
+    browserRunner: "ready" | "configuration-required";
+    containers: "ready" | "configuration-required";
+    gitAutomation: "ready" | "configuration-required";
+  };
+};
+
+export type AppRuntimeActor = {
+  id: string;
+  type: "account" | "visitor" | "anonymous";
+  role: "owner" | "editor" | "reviewer" | "viewer" | "user";
+  displayName: string | null;
+};
+
+export type AppRuntimeSession = {
+  projectId: string;
+  token: string;
+  refreshToken?: string;
+  expiresAt: string;
+  actor: AppRuntimeActor;
+  manifest: AppManifest;
+};
+
+export type AppRecord = {
+  id: string;
+  projectId: string;
+  collection: string;
+  ownerSubject: string;
+  data: Record<string, unknown>;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeEvidence = {
+  id: string;
+  projectId: string;
+  versionId: string | null;
+  source: "preview" | "published" | "browser-runner" | "api";
+  level: "info" | "warn" | "error";
+  message: string;
+  evidence: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type AppBackup = {
+  id: string;
+  projectId: string;
+  label: string;
+  recordCount: number;
+  createdBy: string;
+  createdAt: string;
+};
+
+export type RunnerJob = {
+  id: string;
+  projectId: string;
+  versionId: string | null;
+  kind: "playwright" | "container-build" | "git-sync";
+  status: "queued" | "running" | "passed" | "failed" | "configuration-required";
+  provider: string;
+  request: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type OrganizationMember = {
+  id: string;
+  organizationId: string;
+  subjectId: string;
+  email: string | null;
+  role: "owner" | "admin" | "editor" | "reviewer" | "viewer";
+  status: "active" | "invited" | "suspended";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Organization = {
+  id: string;
+  ownerId: string;
+  name: string;
+  plan: "demo" | "team" | "enterprise";
+  monthlyTokenLimit: number;
+  approvalRequired: boolean;
+  members: OrganizationMember[];
+  usage: {
+    month: string;
+    tokens: number;
+    modelCalls: number;
+    databaseWrites: number;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectApproval = {
+  id: string;
+  projectId: string;
+  versionId: string;
+  status: "pending" | "approved" | "rejected";
+  requestedBy: string;
+  reviewedBy: string | null;
+  comment: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GitIntegration = {
+  projectId: string;
+  provider: "github";
+  repositoryOwner: string;
+  repositoryName: string;
+  defaultBranch: string;
+  status: "connected" | "configuration-required" | "error";
+  lastSync: GitSyncResult | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GitSyncResult = {
+  runId: string;
+  branches: Array<{ agent: "Iris" | "Bob" | "Alex" | "Ray"; branch: string; commitSha: string }>;
+  mergedCommitSha: string | null;
+  repositoryUrl: string;
+  completedAt: string;
+};
+
+export type RaceCandidate = {
+  id: string;
+  runId: string;
+  projectId: string;
+  stage: string;
+  model: string;
+  score: number;
+  selected: boolean;
+  outputChars: number;
+  createdAt: string;
+};
+
 export type AgentPlan = {
   appName: string;
   summary: string;
@@ -31,6 +240,7 @@ export type GenerationStage =
 export type GenerationArtifactKind =
   | "requirements"
   | "architecture"
+  | "manifest"
   | "index.html"
   | "styles.css"
   | "script.js"
@@ -116,10 +326,12 @@ export type GenerationRun = {
   repairCount: number;
   versionId: string | null;
   error: string | null;
+  mode: "standard" | "race";
   currentStage: GenerationStage;
   events: GenerationEvent[];
   artifacts: GenerationArtifact[];
   attempts: ModelAttemptRecord[];
+  candidates: RaceCandidate[];
 };
 
 export type ProjectMessage = {
@@ -138,6 +350,7 @@ export type ProjectVersion = {
   summary: string;
   model: string;
   quality: AppQualityReport | null;
+  manifest: AppManifest | null;
   createdAt: string;
 };
 
@@ -147,6 +360,7 @@ export type Project = {
   prompt: string;
   status: "draft" | "generating" | "ready" | "error";
   plan: AgentPlan | null;
+  manifest: AppManifest | null;
   files: GeneratedFiles;
   currentVersionId: string | null;
   publishedVersionId: string | null;

@@ -29,6 +29,7 @@ const project: Project = {
   prompt: "Build an audit test",
   status: "draft",
   plan: null,
+  manifest: null,
   files: starterFiles,
   currentVersionId: null,
   publishedVersionId: null,

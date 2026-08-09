@@ -1,5 +1,6 @@
 import { cancelGeneration, getProject } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
+import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -10,6 +11,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!(await getProject(id, identity.ownerId))) {
       return withWorkspaceIdentity(Response.json({ error: "项目不存在或无权访问" }, { status: 404 }), identity);
     }
+    const role = await projectOrganizationRole(id, identity.ownerId);
+    if (!role || !["owner", "admin", "editor"].includes(role)) return withWorkspaceIdentity(Response.json({ error: "当前组织角色不能取消生成" }, { status: 403 }), identity);
     const generationId = await cancelGeneration(id, identity.ownerId);
     return withWorkspaceIdentity(Response.json({ cancelled: Boolean(generationId) }), identity);
   } catch (error) {

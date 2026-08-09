@@ -22,4 +22,20 @@ describe("preview runtime", () => {
   it("rejects incomplete model output", () => {
     expect(() => normalizeGeneratedFiles({ "index.html": "<main />" })).toThrow("styles.css");
   });
+
+  it("injects the authenticated per-app data SDK and visual element picker", () => {
+    const html = composePreview(starterFiles, {
+      projectId: "project-123",
+      versionId: "version-456",
+      token: "runtime-token",
+      actor: { id: "actor-1", type: "account", role: "editor", displayName: "Editor" },
+    });
+    expect(html).toContain('/api/app-runtime/project-123');
+    expect(html).toContain("Authorization':'Bearer '");
+    expect(html).toContain("window.nucleus={");
+    expect(html).toContain("create:async function(collection,value)");
+    expect(html).toContain("type:'element-selected'");
+    expect(html).toContain("data.type==='visual-patch'");
+    expect(html).toContain("data-nucleus-overlay");
+  });
 });
