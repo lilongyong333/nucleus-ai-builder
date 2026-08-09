@@ -89,16 +89,20 @@ D1 写入 `projects` 和第一条用户 `messages`，然后返回工作台链接
 ```dotenv
 OPENCODE_GO_MODEL=gpt-5.6-luna
 OPENCODE_GO_FALLBACK_MODEL=glm-5.2
+OPENCODE_GO_CODE_MODEL=glm-5.2
+OPENCODE_GO_CODE_FALLBACK_MODEL=gpt-5.6-luna
 OPENCODE_GO_MAX_MODEL_CALLS=24
 OPENCODE_GO_MAX_TOTAL_TOKENS=180000
 OPENCODE_GO_STEP_MAX_CALLS=2
 OPENCODE_GO_STEP_MAX_TOTAL_TOKENS=40000
-OPENCODE_GO_STEP_MAX_DURATION_MS=47000
+OPENCODE_GO_STEP_MAX_DURATION_MS=52000
 OPENCODE_GO_REQUEST_TIMEOUT_MS=26000
 OPENCODE_GO_FALLBACK_RESERVE_MS=18000
+OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS=34000
+OPENCODE_GO_CODE_FALLBACK_RESERVE_MS=16000
 ```
 
-每个阶段开始前读取 Run 已审计的模型调用和 Token，扣减后再创建当前 `ModelBudget`。达到 Run 上限会直接终止并保留工件。当前主模型是 `gpt-5.6-luna`，备用是 `glm-5.2`。以下情况会进入备用模型：
+每个阶段开始前读取 Run 已审计的模型调用和 Token，扣减后再创建当前 `ModelBudget`。达到 Run 上限会直接终止并保留工件。需求/架构/审查使用 `gpt-5.6-luna → glm-5.2`；Alex 和 Ray 代码使用 `glm-5.2 → gpt-5.6-luna`。以下情况会进入备用模型：
 
 - 5xx 或模型特定错误；
 - 网络错误；

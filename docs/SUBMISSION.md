@@ -27,7 +27,7 @@ Sites 备用地址：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.sit
 - D1 保存项目和全量版本快照，而不是浏览器本地存储；
 - path code fence 传输长代码，避免大 JSON 转义失败；
 - 游客直接体验；Sign in with ChatGPT 后匿名项目、版本和对话迁移到账号并跨设备保存；
-- 当前套餐真实规划/长代码探针后选择 `gpt-5.6-luna` 作为主模型、`glm-5.2` 作为备用；不为凑数量做无工件的高成本 Race Mode；
+- 当前套餐与生产 Run 证据后采用按角色路由：`gpt-5.6-luna` 负责需求/架构/审查，`glm-5.2` 负责长代码，彼此作为备用；不为凑数量做无工件的高成本 Race Mode；
 - 整轮允许 24 次调用/180K Tokens，但每个 Agent 阶段仍控制在边缘执行窗口，并在阶段之间落盘。
 
 ## 4. 已完成功能

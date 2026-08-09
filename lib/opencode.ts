@@ -20,6 +20,13 @@ export function activeModels(): string[] {
   return [...new Set([activeModel(), runtimeValue("OPENCODE_GO_FALLBACK_MODEL", "glm-5.2")].filter(Boolean))];
 }
 
+export function activeCodeModels(): string[] {
+  return [...new Set([
+    runtimeValue("OPENCODE_GO_CODE_MODEL", "glm-5.2"),
+    runtimeValue("OPENCODE_GO_CODE_FALLBACK_MODEL", "gpt-5.6-luna"),
+  ].filter(Boolean))];
+}
+
 function runtimeInteger(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number(runtimeValue(name, String(fallback)));
   return Math.min(max, Math.max(min, Number.isFinite(parsed) ? Math.floor(parsed) : fallback));
@@ -63,18 +70,28 @@ export type GenerationProgress = {
 
 type ProgressStage = Pick<GenerationProgress, "agent" | "phase" | "label">;
 
-async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBudget, signal?: AbortSignal, progress?: { stage: ProgressStage; report: (event: GenerationProgress) => void }): Promise<GatewayChatResult> {
+type ChatOptions = { models?: string[]; requestTimeoutMs?: number; fallbackReserveMs?: number };
+
+function codeChatOptions(): ChatOptions {
+  return {
+    models: activeCodeModels(),
+    requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 34_000, 8_000, 45_000),
+    fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 16_000, 5_000, 25_000),
+  };
+}
+
+async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBudget, signal?: AbortSignal, progress?: { stage: ProgressStage; report: (event: GenerationProgress) => void }, options: ChatOptions = {}): Promise<GatewayChatResult> {
   const apiKey = runtimeValue("OPENCODE_GO_API_KEY");
   if (!apiKey) throw new Error("站点还没有配置 OpenCode Go API Key");
   let lastTotalChars = 0;
   const result = await requestChat({
     baseUrl: runtimeValue("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
     apiKey,
-    models: activeModels(),
+    models: options.models ?? activeModels(),
     messages,
     maxTokens,
-    requestTimeoutMs: runtimeInteger("OPENCODE_GO_REQUEST_TIMEOUT_MS", 26_000, 5_000, 45_000),
-    fallbackReserveMs: runtimeInteger("OPENCODE_GO_FALLBACK_RESERVE_MS", 18_000, 5_000, 30_000),
+    requestTimeoutMs: options.requestTimeoutMs ?? runtimeInteger("OPENCODE_GO_REQUEST_TIMEOUT_MS", 26_000, 5_000, 45_000),
+    fallbackReserveMs: options.fallbackReserveMs ?? runtimeInteger("OPENCODE_GO_FALLBACK_RESERVE_MS", 18_000, 5_000, 30_000),
     emptyRetriesPerModel: 0,
     budget,
     signal,
@@ -180,14 +197,14 @@ export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: strin
   const availableFiles = { ...(currentFiles ?? {}), ...files };
   const context = Object.entries(availableFiles).map(([name, content]) => `--- ${name} ---\n${content}`).join("\n\n");
   const pathRule = path === "index.html"
-    ? "Return complete semantic body markup and head metadata. Do not include inline style or script tags. Every visible primary control needs a stable id or data attribute."
+    ? "Return complete semantic HTML and head metadata. Do not include inline style or script tags. Do not implement CSS or JavaScript in this response. Every visible primary control needs a stable id or data attribute."
     : path === "styles.css"
-      ? "Return complete responsive CSS. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, polished empty/error/active states, and no external assets."
-      : "Return complete executable vanilla JavaScript. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, defensive DOM access, and localStorage only for device-local app data. No imports or external libraries.";
+      ? "Return complete responsive CSS only. Do not output HTML or JavaScript. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, polished empty/error/active states, and no external assets."
+      : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, defensive DOM access, and localStorage only for device-local app data. No imports or external libraries.";
   const result = await chat([
-    { role: "system", content: `You are Alex, an elite implementation engineer. Generate exactly one production-ready file: ${path}. ${pathRule} Output only one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}}. Do not include reasoning or any other file. The file may be detailed; correctness and completeness are more important than brevity. Never put markdown fences inside the file.` },
-    { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}` },
-  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, 12_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined);
+    { role: "system", content: `You are Alex, an elite implementation engineer. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
+    { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Do not output or re-create any other path.` },
+  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 6_000 : path === "styles.css" ? 8_000 : 12_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, codeChatOptions());
   const content = extractSingleFile(path, result.content);
   if (content.length < 40) throw new AgentOutputError(`${path} 输出过短，未形成可用工件`, result);
   if (content.length > 120_000) throw new AgentOutputError(`${path} 超过 120KB 安全上限`, result);
@@ -233,7 +250,7 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
   const result = await chat([
     { role: "system", content: "You are Ray acting as the repair engineer. Fix every concrete error in the QA report while preserving working behavior. Return only the complete changed files as markdown code blocks with exact {path=index.html}, {path=styles.css}, or {path=script.js} opening-line metadata. Do not return unchanged files, explanations, summaries, or JSON. Never put markdown fences inside a file." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nQA report:\n${JSON.stringify(review)}\n\nCurrent files:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
-  ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined);
+  ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, codeChatOptions());
   const changed = extractGeneratedFiles(result.content);
   if (Object.keys(changed).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
   return modelResult(changed, result, startedAt);
@@ -299,7 +316,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
   const initial = await chat([
     { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup; all three files must be complete; keep the entire response compact and under 2800 tokens. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
-  ], 3600, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:initial", label: "正在实时生成页面、样式和交互" }, report: reportProgress } : undefined);
+  ], 3600, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:initial", label: "正在实时生成页面、样式和交互" }, report: reportProgress } : undefined, codeChatOptions());
   models.add(initial.model);
   let raw = initial.content;
   usage = addUsage(usage, initial.usage);
@@ -311,7 +328,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
       const repair = await chat([
         { role: "system", content: `You are repairing an incomplete artifact. Return only markdown code blocks for these missing files: ${missing.join(", ")}. Use the exact {path=filename} opening-line format. Do not repeat files that already exist. No reasoning.` },
         { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nExisting generated files:\n${Object.entries(partial).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
-      ], 2200, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:missing", label: `正在补齐 ${missing.join("、")}` }, report: reportProgress } : undefined);
+      ], 2200, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:missing", label: `正在补齐 ${missing.join("、")}` }, report: reportProgress } : undefined, codeChatOptions());
       models.add(repair.model);
       raw = `${raw}\n${repair.content}`;
       usage = addUsage(usage, repair.usage);
@@ -326,7 +343,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
     const repair = await chat([
       { role: "system", content: "You are Ray, a senior frontend QA engineer. Repair the supplied browser app so every reported quality issue is resolved without removing working features. Return only the changed files as markdown code blocks using the exact {path=filename} format. Do not include reasoning, JSON, or unchanged files." },
       { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nQuality report:\n${qualityRepairBrief(quality)}\n\nFiles to repair:\n${Object.entries(parsed.files).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
-    ], 2600, budget, signal, reportProgress ? { stage: { agent: "Ray", phase: "quality:repair", label: "正在实时修复质量门问题" }, report: reportProgress } : undefined);
+    ], 2600, budget, signal, reportProgress ? { stage: { agent: "Ray", phase: "quality:repair", label: "正在实时修复质量门问题" }, report: reportProgress } : undefined, codeChatOptions());
     models.add(repair.model);
     parsed = parseGeneratedReply(repair.content, parsed.summary, parsed.files);
     usage = addUsage(usage, repair.usage);

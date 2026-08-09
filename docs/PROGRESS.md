@@ -273,7 +273,7 @@ Production      passed
 - 新增 `model_attempts`，保存模型、状态、阶段、耗时、首字时间、输出字符数、HTTP 状态、usage 和错误；浏览器中断记为 `cancelled`；
 - 项目 generation lease 与阶段 active-step lease 双重阻止并发；阶段断开后只重跑当前未完成工件；
 - 整个 Run 24 次调用/180K Tokens 硬上限，单阶段 2 次/40K/47 秒；主模型 26 秒并为备用预留 18 秒；达到预算直接终止并保留检查点；
-- `gpt-5.6-luna` 主模型、`glm-5.2` 备用；默认每个代码文件最高 12K Tokens，修复最高 16K；
+- 需求/架构/审查使用 `gpt-5.6-luna → glm-5.2`；生产 v22 发现 Luna 在 Alex HTML 阶段会越界生成其他文件，故代码路由改为 `glm-5.2 → gpt-5.6-luna`；HTML/CSS/JS 分别 6K/8K/12K Tokens，代码主窗口 34 秒，修复最高 16K；
 - Ray 同时执行通用确定性质量门、真实模型逐项审查和最多两轮定向修复；贪吃蛇额外要求运行循环、方向控制、场景渲染、食物计分和生命周期证据；
 - migration `0006_familiar_iron_monger.sql` 增加阶段租约、Artifact 和 ModelAttempt 表/索引，运行期 schema 初始化兼容已有 D1。
 
@@ -287,3 +287,11 @@ Production      passed
 - `git diff --check`：通过。
 
 正式 Git commit、GitHub Actions、Sites version 和线上真实贪吃蛇数据将在本轮部署验收完成后补在本节。
+
+### 首次生产验收发现的问题（Sites v22）
+
+- v0 真实性通过：新贪吃蛇项目只显示 `VERSION 0 · NO GENERATED APP`，发布/下载禁用，必须显式点击“开始正式构建”；
+- Iris 真实生成 8 个功能/12 条验收标准，Bob 生成 12 个状态约束/12 条测试策略，两类 Artifact 均持久化；
+- Alex `index.html` 三次尝试均收到约 10K–14K 实时字符，但 Luna/备用输出越界包含 CSS/JS，窗口结束仍未完整关闭；
+- Run 产生明确失败终态，只保留 2 个上游 Artifact，代码 0/3、Version v0、发布/下载继续禁用，没有拿 Todo Demo 冒充成果；
+- 这次证据推动按角色模型路由、代码 34 秒主窗口和更强单文件协议，修复后将发布下一 Sites version 再复测。
