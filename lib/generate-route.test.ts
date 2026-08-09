@@ -50,6 +50,14 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/opencode", () => ({
   activeModel: () => "audit-model",
+  createGenerationBudget: () => ({
+    maxCalls: 8,
+    maxTotalTokens: 50_000,
+    deadlineAt: Date.now() + 240_000,
+    calls: 0,
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    modelsUsed: [],
+  }),
   createPlan: vi.fn(async () => { throw new Error("intentional model failure"); }),
   buildApp: vi.fn(),
 }));

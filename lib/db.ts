@@ -201,6 +201,7 @@ export type GenerationMetrics = {
   durationMs: number;
   modelCalls: number;
   repairCount: number;
+  model: string;
 };
 
 type GenerationEventInput = {
@@ -255,7 +256,7 @@ export async function saveGeneration(id: string, ownerId: string, generationId: 
     db().prepare(`INSERT INTO versions (id,project_id,version_number,files_json,summary,model,quality_json,created_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND owner_id=? AND generation_id=?) AND EXISTS (SELECT 1 FROM generation_runs WHERE id=? AND project_id=? AND status='running')`).bind(versionId, id, versionNumber, JSON.stringify(files), summary, model, JSON.stringify(quality), now, id, ownerId, generationId, generationId, id),
     db().prepare(`INSERT INTO messages (id,project_id,role,content,created_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND owner_id=? AND generation_id=?) AND EXISTS (SELECT 1 FROM generation_runs WHERE id=? AND project_id=? AND status='running')`).bind(crypto.randomUUID(), id, "assistant", summary, now, id, ownerId, generationId, generationId, id),
     db().prepare(`UPDATE projects SET title=?, status='ready', plan_json=?, files_json=?, current_version_id=?, generation_id=NULL, generation_started_at=NULL, updated_at=? WHERE id=? AND owner_id=? AND generation_id=? AND EXISTS (SELECT 1 FROM generation_runs WHERE id=? AND project_id=? AND status='running')`).bind(plan.appName, JSON.stringify(plan), JSON.stringify(files), versionId, now, id, ownerId, generationId, generationId, id),
-    db().prepare(`UPDATE generation_runs SET status='completed', completed_at=?, duration_ms=?, prompt_tokens=?, completion_tokens=?, total_tokens=?, model_calls=?, repair_count=?, version_id=?, error=NULL WHERE id=? AND project_id=? AND status='running'`).bind(now, metrics.durationMs, metrics.usage.promptTokens, metrics.usage.completionTokens, metrics.usage.totalTokens, metrics.modelCalls, metrics.repairCount, versionId, generationId, id),
+    db().prepare(`UPDATE generation_runs SET status='completed', completed_at=?, duration_ms=?, prompt_tokens=?, completion_tokens=?, total_tokens=?, model_calls=?, repair_count=?, model=?, version_id=?, error=NULL WHERE id=? AND project_id=? AND status='running'`).bind(now, metrics.durationMs, metrics.usage.promptTokens, metrics.usage.completionTokens, metrics.usage.totalTokens, metrics.modelCalls, metrics.repairCount, metrics.model, versionId, generationId, id),
   ]);
   if (Number(results[2]?.meta.changes ?? 0) !== 1 || Number(results[3]?.meta.changes ?? 0) !== 1) throw new Error("生成任务已过期，请重新开始");
   return (await getProject(id, ownerId))!;
@@ -266,7 +267,7 @@ export async function markError(id: string, ownerId: string, generationId: strin
   const now = new Date().toISOString();
   await db().batch([
     db().prepare(`UPDATE projects SET status='error', generation_id=NULL, generation_started_at=NULL, updated_at=? WHERE id=? AND owner_id=? AND generation_id=?`).bind(now, id, ownerId, generationId),
-    db().prepare(`UPDATE generation_runs SET status='failed', completed_at=?, duration_ms=?, prompt_tokens=?, completion_tokens=?, total_tokens=?, model_calls=?, repair_count=?, error=? WHERE id=? AND project_id=? AND status='running'`).bind(now, metrics.durationMs, metrics.usage.promptTokens, metrics.usage.completionTokens, metrics.usage.totalTokens, metrics.modelCalls, metrics.repairCount, error.slice(0, 600), generationId, id),
+    db().prepare(`UPDATE generation_runs SET status='failed', completed_at=?, duration_ms=?, prompt_tokens=?, completion_tokens=?, total_tokens=?, model_calls=?, repair_count=?, model=?, error=? WHERE id=? AND project_id=? AND status='running'`).bind(now, metrics.durationMs, metrics.usage.promptTokens, metrics.usage.completionTokens, metrics.usage.totalTokens, metrics.modelCalls, metrics.repairCount, metrics.model, error.slice(0, 600), generationId, id),
   ]);
 }
 
