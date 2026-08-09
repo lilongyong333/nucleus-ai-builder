@@ -87,7 +87,7 @@ OPENCODE_GO_MAX_DURATION_MS=240000
 OPENCODE_GO_REQUEST_TIMEOUT_MS=55000
 ```
 
-默认主模型是 `qwen3.5-plus`，备用是 `glm-5.2`。以下情况会进入备用模型：
+默认代码主模型是 `glm-5.2`，备用是 `qwen3.5-plus`。以下情况会进入备用模型：
 
 - 5xx 或模型特定错误；
 - 网络错误；

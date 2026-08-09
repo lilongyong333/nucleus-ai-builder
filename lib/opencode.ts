@@ -13,11 +13,11 @@ function runtimeValue(name: string, fallback = ""): string {
 }
 
 export function activeModel(): string {
-  return runtimeValue("OPENCODE_GO_MODEL", "qwen3.5-plus");
+  return runtimeValue("OPENCODE_GO_MODEL", "glm-5.2");
 }
 
 export function activeModels(): string[] {
-  return [...new Set([activeModel(), runtimeValue("OPENCODE_GO_FALLBACK_MODEL", "glm-5.2")].filter(Boolean))];
+  return [...new Set([activeModel(), runtimeValue("OPENCODE_GO_FALLBACK_MODEL", "qwen3.5-plus")].filter(Boolean))];
 }
 
 function runtimeInteger(name: string, fallback: number, min: number, max: number): number {

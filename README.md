@@ -11,7 +11,7 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 ## 已实现功能
 
 - 一句话创建 HTML / CSS / JavaScript 三文件应用
-- OpenCode Go 真实调用，默认 `qwen3.5-plus`，失败时降级到 `glm-5.2`
+- OpenCode Go 真实调用，默认 `glm-5.2`，失败时降级到 `qwen3.5-plus`
 - Iris 使用确定性本地 SOP 产出结构化计划；正常新建只需一次代码模型调用
 - 单次请求超时与整轮调用/Token/时间预算，最终实际模型写入审计
 - 智能体工作时间线和结构化产品计划
@@ -58,8 +58,8 @@ pnpm dev
 ```dotenv
 OPENCODE_GO_API_KEY=
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=qwen3.5-plus
-OPENCODE_GO_FALLBACK_MODEL=glm-5.2
+OPENCODE_GO_MODEL=glm-5.2
+OPENCODE_GO_FALLBACK_MODEL=qwen3.5-plus
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
