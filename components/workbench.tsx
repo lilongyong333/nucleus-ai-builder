@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, WandSparkles, X } from "lucide-react";
+import { ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
 
@@ -15,6 +15,8 @@ export function Workbench({ projectId }: { projectId: string }) {
   const router = useRouter();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const startedRef = useRef(false);
+  const generatingRef = useRef(false);
+  const generationControllerRef = useRef<AbortController | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -52,15 +54,18 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   const runGenerate = useCallback(async (prompt: string) => {
     const clean = prompt.trim();
-    if (clean.length < 3 || generating) return;
+    if (clean.length < 3 || generatingRef.current) return;
+    generatingRef.current = true;
     setGenerating(true);
     setPreviewError("");
     setTimeline([]);
     setLivePlan(null);
     setLiveQuality(null);
     setRequestText("");
+    const generationController = new AbortController();
+    generationControllerRef.current = generationController;
     try {
-      const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, prompt: clean }) });
+      const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, prompt: clean }), signal: generationController.signal });
       if (!response.ok || !response.body) {
         const data = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(data.error || "生成请求失败");
@@ -81,13 +86,30 @@ export function Workbench({ projectId }: { projectId: string }) {
       }
       if (buffer.trim()) handleEvent(JSON.parse(buffer) as AgentEvent);
     } catch (cause) {
+      if (generationController.signal.aborted) {
+        setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "已取消生成", detail: "当前任务已停止，已保存版本不会受到影响。", state: "done", time: nowTime() }]);
+        setNotice("已取消本次生成");
+        return;
+      }
       const message = cause instanceof Error ? cause.message : "生成失败";
       setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "生成中断", detail: message, state: "error", time: nowTime() }]);
       setNotice(message);
     } finally {
+      if (generationControllerRef.current === generationController) generationControllerRef.current = null;
+      generatingRef.current = false;
       setGenerating(false);
     }
-  }, [generating, handleEvent, projectId]);
+  }, [handleEvent, projectId]);
+
+  const cancelCurrentGeneration = useCallback(async () => {
+    generationControllerRef.current?.abort();
+    try {
+      const response = await fetch(`/api/projects/${projectId}/cancel`, { method: "POST", keepalive: true });
+      if (!response.ok) throw new Error("取消请求失败");
+    } catch {
+      setNotice("本地请求已停止；服务端任务会由租约自动回收");
+    }
+  }, [projectId]);
 
   useEffect(() => {
     fetch(`/api/projects/${projectId}`).then(async (response) => {
@@ -174,7 +196,7 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {liveQuality && <div className={`quality-card ${liveQuality.passed ? "passed" : "failed"}`}><header><span><ShieldCheck size={13} /> Ray 质量门</span><b>{liveQuality.grade}</b></header><div className="quality-score"><strong>{liveQuality.score}</strong><span>/100</span><i><em style={{ width: `${liveQuality.score}%` }} /></i></div><footer><span>{liveQuality.checks.filter((check) => check.severity === "pass").length}/{liveQuality.checks.length} 项通过</span><small>{liveQuality.checks.find((check) => check.severity !== "pass")?.label ?? "语法、安全、交互与体验均已验证"}</small></footer></div>}
 
-        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={generating} /><div><span><MessageSquareText size={13} /> 继续迭代</span><button disabled={generating || requestText.trim().length < 3} aria-label="发送修改需求">{generating ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div></form>
+        <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={generating} /><div><span><MessageSquareText size={13} /> {generating ? "生成任务进行中" : "继续迭代"}</span>{generating ? <button type="button" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : <button disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={16} /></button>}</div></form>
       </aside>
 
       {!sidebarOpen && <button className="reopen-sidebar" onClick={() => setSidebarOpen(true)}><Bot size={18} /><span>智能体</span></button>}

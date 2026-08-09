@@ -46,6 +46,7 @@ export type Project = {
   plan: AgentPlan | null;
   files: GeneratedFiles;
   currentVersionId: string | null;
+  publishedVersionId: string | null;
   slug: string | null;
   createdAt: string;
   updatedAt: string;

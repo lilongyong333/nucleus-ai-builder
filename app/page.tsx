@@ -17,16 +17,21 @@ export default function Home() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
+  const [sessionReady, setSessionReady] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/projects").then((r) => r.json() as Promise<{ projects?: Project[] }>).then((data) => setProjects(data.projects ?? [])).catch(() => undefined);
+    fetch("/api/projects")
+      .then((r) => r.json() as Promise<{ projects?: Project[] }>)
+      .then((data) => setProjects(data.projects ?? []))
+      .catch(() => undefined)
+      .finally(() => setSessionReady(true));
   }, []);
 
   async function createApp(value = prompt) {
     const clean = value.trim();
-    if (clean.length < 3 || creating) return;
+    if (clean.length < 3 || creating || !sessionReady) return;
     setCreating(true);
     setError("");
     try {
@@ -55,7 +60,7 @@ export default function Home() {
         <p className="hero-copy">不需要从空白文件开始。Nucleus 会先理解需求，再规划、编写和检查，最后交付一个能点击、能使用、能继续修改的网页应用。</p>
         <div className="prompt-composer">
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void createApp(); }} placeholder="例如：做一个帮助我规划旅行预算的应用…" aria-label="描述你想创建的应用" />
-          <div className="composer-footer"><span><Sparkles size={13} /> OpenCode Go · Kimi Code</span><button onClick={() => void createApp()} disabled={creating || prompt.trim().length < 3}>{creating ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}<span>开始构建</span></button></div>
+          <div className="composer-footer"><span><Sparkles size={13} /> OpenCode Go · Kimi Code</span><button onClick={() => void createApp()} disabled={!sessionReady || creating || prompt.trim().length < 3}>{creating || !sessionReady ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}<span>{sessionReady ? "开始构建" : "准备工作区"}</span></button></div>
         </div>
         {error && <p className="form-error">{error}</p>}
         <p className="composer-hint">按 Ctrl + Enter 提交 · 无需注册即可体验</p>

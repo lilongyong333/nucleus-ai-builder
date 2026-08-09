@@ -1,12 +1,14 @@
 import { getProject } from "@/lib/db";
+import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  const session = resolveVisitorSession(request);
   try {
     const { id } = await context.params;
-    const project = await getProject(id);
-    if (!project) return Response.json({ error: "项目不存在" }, { status: 404 });
-    return Response.json({ project });
+    const project = await getProject(id, session.id);
+    if (!project) return withVisitorSession(Response.json({ error: "项目不存在" }, { status: 404 }), session);
+    return withVisitorSession(Response.json({ project }), session);
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "读取项目失败" }, { status: 500 });
+    return withVisitorSession(Response.json({ error: error instanceof Error ? error.message : "读取项目失败" }, { status: 500 }), session);
   }
 }
