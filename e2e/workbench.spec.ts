@@ -98,6 +98,10 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
   await page.getByRole("button", { name: /对话/ }).click();
   await expect(page.getByText("项目对话记忆")).toBeVisible();
   await expect(page.getByText("制作一个面试计划板")).toBeVisible();
+  await page.getByRole("button", { name: "关闭对话记忆" }).click();
+  await page.getByRole("link", { name: "返回首页" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: /描述一个想法/ })).toBeVisible();
 });
 
 test("renders streamed agent review and the completed version", async ({ page }) => {
@@ -133,7 +137,9 @@ test("shows a signed-in account project library with detailed links", async ({ p
     "oai-authenticated-user-full-name": encodeURIComponent("候选人"),
     "oai-authenticated-user-full-name-encoding": "percent-encoded-utf-8",
   });
-  await page.route("**/api/projects", (route) => route.fulfill({ json: { projects: [project(2, finalQuality)] } }));
+  const accountProject = project(2, finalQuality);
+  await page.route("**/api/projects", (route) => route.fulfill({ json: { projects: [accountProject], account: { email: "candidate@example.com", displayName: "候选人" } } }));
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: accountProject } }));
 
   await page.goto("/account");
   await expect(page.getByRole("heading", { name: "候选人" })).toBeVisible();
@@ -142,6 +148,15 @@ test("shows a signed-in account project library with detailed links", async ({ p
   await expect(page.getByText("工作台详细链接")).toBeVisible();
   await expect(page.getByText("公开成品链接")).toBeVisible();
   await expect(page.getByRole("link", { name: /打开工作台/ })).toHaveAttribute("href", "/w/e2e-project");
+  await page.getByRole("link", { name: /打开工作台/ }).click();
+  await expect(page).toHaveURL(/\/w\/e2e-project$/);
+  await expect(page.locator(".project-title strong")).toHaveText("面试计划板");
+  await page.getByRole("link", { name: "返回首页" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole("link", { name: "候选人" }).click();
+  await expect(page).toHaveURL(/\/account$/);
+  await page.getByRole("link", { name: "新建应用" }).click();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("recovers a server-side generation after the browser stream disconnects", async ({ page }) => {

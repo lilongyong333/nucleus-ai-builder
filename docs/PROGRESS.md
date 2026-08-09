@@ -216,3 +216,12 @@ Production      passed
 - 公共 1.1.1.1 DNS 返回正确 CNAME；`https://www.llynb.cc` 和 `/api/session` 均返回 200；
 - 浏览器从自定义域名打开复杂看板并新增“验证 www.llynb.cc 长期在线”，总数 4→5、完成率 25%→20%；
 - 完整配置、以后发布和回滚步骤见 `docs/CUSTOM-DOMAIN-DEPLOYMENT.md`。
+
+## 第八轮：登录后导航失效修复
+
+- 在已登录的 `https://www.llynb.cc/account` 复现：姓名、邮箱和三个项目正常，证明身份注入和 D1 读取成功；
+- “新建应用”和“打开工作台”均有正确 `href`，但真实点击后 URL 不变；
+- 浏览器 Console 捕获 Vinext RSC prefetch/navigation `TypeError`，根因定位为客户端路由运行时，而不是 OAuth 回调或项目权限；
+- 账号页、首页、最近项目和工作台的关键跨页面入口统一改为完整文档导航，保留同域登录并绕开故障代码；
+- Playwright 从仅检查链接属性升级为真实点击完整闭环：账号页 → 工作台 → 首页 → 项目中心 → 新建应用；
+- Vitest 30/30、ESLint、TypeScript、生产构建和 Chromium Playwright 4/4 通过。

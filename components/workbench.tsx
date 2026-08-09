@@ -1,8 +1,8 @@
 "use client";
 
+/* eslint-disable @next/next/no-html-link-for-pages -- Vinext production RSC navigation currently throws; full document navigation is intentional. */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { Activity, ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, UserRound, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
@@ -12,7 +12,6 @@ type TimelineItem = { id: string; agent: string; title: string; detail: string; 
 const agentTone: Record<string, string> = { Iris: "iris", Bob: "bob", Alex: "alex", Ray: "ray" };
 
 export function Workbench({ projectId }: { projectId: string }) {
-  const router = useRouter();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const startedRef = useRef(false);
   const generatingRef = useRef(false);
@@ -251,8 +250,8 @@ export function Workbench({ projectId }: { projectId: string }) {
   return (
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
       <header className="workbench-topbar">
-        <div className="topbar-left"><button className="icon-button" onClick={() => router.push("/")} aria-label="返回首页"><ArrowLeft size={18} /></button><Link className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></Link><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${busy ? "busy" : project.status === "error" ? "failed" : ""}`} /> <small>{statusLabel}</small></div></div>
-        <div className="topbar-actions"><Link href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></Link><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
+        <div className="topbar-left"><a className="icon-button" href="/" aria-label="返回首页"><ArrowLeft size={18} /></a><a className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></a><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${busy ? "busy" : project.status === "error" ? "failed" : ""}`} /> <small>{statusLabel}</small></div></div>
+        <div className="topbar-actions"><a href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></a><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
       </header>
 
       <aside className="agent-panel">
