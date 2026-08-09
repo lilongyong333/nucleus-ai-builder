@@ -66,6 +66,14 @@ export type GenerationRun = {
   events: GenerationEvent[];
 };
 
+export type ProjectMessage = {
+  id: string;
+  projectId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
 export type ProjectVersion = {
   id: string;
   projectId: string;
@@ -91,6 +99,7 @@ export type Project = {
   updatedAt: string;
   versions: ProjectVersion[];
   runs: GenerationRun[];
+  messages: ProjectMessage[];
 };
 
 export type AgentAudit = {

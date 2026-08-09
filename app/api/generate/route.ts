@@ -1,4 +1,5 @@
 import { beginGeneration, consumeGenerationQuota, getProject, markError, recordGenerationEvent, releaseGeneration, saveGeneration, type GenerationMetrics } from "@/lib/db";
+import { resolveWorkspaceIdentity, withWorkspaceIdentity, type WorkspaceIdentity } from "@/lib/identity";
 import { activeModel, buildApp, createPlan } from "@/lib/opencode";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import { addUsage, emptyUsage } from "@/lib/usage";
@@ -7,33 +8,36 @@ import type { AgentAudit, AgentEvent, ModelUsage, Project } from "@/lib/types";
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  const session = resolveVisitorSession(request);
+  const visitor = resolveVisitorSession(request);
+  let identity: WorkspaceIdentity;
+  try { identity = await resolveWorkspaceIdentity(request, visitor); }
+  catch (error) { return withVisitorSession(Response.json({ error: error instanceof Error ? error.message : "工作区身份解析失败" }, { status: 500 }), visitor); }
   let body: { projectId?: string; prompt?: string };
-  try { body = await request.json(); } catch { return withVisitorSession(Response.json({ error: "请求格式错误" }, { status: 400 }), session); }
+  try { body = await request.json(); } catch { return withWorkspaceIdentity(Response.json({ error: "请求格式错误" }, { status: 400 }), identity); }
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-  if (!projectId || prompt.length < 3) return withVisitorSession(Response.json({ error: "项目和需求不能为空" }, { status: 400 }), session);
+  if (!projectId || prompt.length < 3) return withWorkspaceIdentity(Response.json({ error: "项目和需求不能为空" }, { status: 400 }), identity);
 
   const model = activeModel();
   const runStartedAt = Date.now();
   let project: Project | null = null;
   let generationId = "";
   try {
-    project = await getProject(projectId, session.id);
-    if (!project) return withVisitorSession(Response.json({ error: "项目不存在或无权访问" }, { status: 404 }), session);
-    const lease = await beginGeneration(projectId, session.id, prompt, model);
-    if (!lease) return withVisitorSession(Response.json({ error: "这个项目正在生成，请等待当前任务完成" }, { status: 409 }), session);
+    project = await getProject(projectId, identity.ownerId);
+    if (!project) return withWorkspaceIdentity(Response.json({ error: "项目不存在或无权访问" }, { status: 404 }), identity);
+    const lease = await beginGeneration(projectId, identity.ownerId, prompt, model);
+    if (!lease) return withWorkspaceIdentity(Response.json({ error: "这个项目正在生成，请等待当前任务完成" }, { status: 409 }), identity);
     generationId = lease;
-    const clientIdentifier = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip") ?? session.id;
+    const clientIdentifier = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip") ?? identity.ownerId;
     if (!(await consumeGenerationQuota(clientIdentifier))) {
-      await releaseGeneration(projectId, session.id, generationId, project.versions.length > 0 ? "ready" : "draft", "本小时生成配额已用完");
-      return withVisitorSession(Response.json({ error: "本小时生成次数已达上限，请稍后再试" }, { status: 429, headers: { "Retry-After": "3600" } }), session);
+      await releaseGeneration(projectId, identity.ownerId, generationId, project.versions.length > 0 ? "ready" : "draft", "本小时生成配额已用完");
+      return withWorkspaceIdentity(Response.json({ error: "本小时生成次数已达上限，请稍后再试" }, { status: 429, headers: { "Retry-After": "3600" } }), identity);
     }
   } catch (error) {
-    if (generationId) await releaseGeneration(projectId, session.id, generationId, project?.versions.length ? "ready" : "draft", error instanceof Error ? error.message : "生成准备失败").catch(() => undefined);
-    return withVisitorSession(Response.json({ error: error instanceof Error ? error.message : "生成准备失败" }, { status: 500 }), session);
+    if (generationId) await releaseGeneration(projectId, identity.ownerId, generationId, project?.versions.length ? "ready" : "draft", error instanceof Error ? error.message : "生成准备失败").catch(() => undefined);
+    return withWorkspaceIdentity(Response.json({ error: error instanceof Error ? error.message : "生成准备失败" }, { status: 500 }), identity);
   }
-  if (!project || !generationId) return withVisitorSession(Response.json({ error: "生成准备失败" }, { status: 500 }), session);
+  if (!project || !generationId) return withWorkspaceIdentity(Response.json({ error: "生成准备失败" }, { status: 500 }), identity);
 
   const activeProject = project;
   const activeGenerationId = generationId;
@@ -95,13 +99,13 @@ export async function POST(request: Request) {
         emit({ type: "review", report: result.quality, audit: reviewAudit });
         await status("Ray", "quality", `质量门 ${result.quality.grade} 级`, `${result.quality.score}/100 · 检查通过，正在保存版本`, "done");
 
-        const saved = await saveGeneration(projectId, session.id, activeGenerationId, planResult.plan, result.files, result.summary, model, result.quality, metrics());
+        const saved = await saveGeneration(projectId, identity.ownerId, activeGenerationId, planResult.plan, result.files, result.summary, model, result.quality, metrics());
         emit({ type: "status", agent: "Ray", title: "版本已保存", detail: `${usage.totalTokens || "未返回"} tokens · 可回滚、分享和下载`, state: "done" });
         emit({ type: "complete", project: saved });
       } catch (error) {
         const message = error instanceof Error ? error.message : "生成失败，请重试";
         if (generationAbort.signal.aborted) {
-          await releaseGeneration(projectId, session.id, activeGenerationId, activeProject.versions.length > 0 ? "ready" : "draft", "用户中止生成连接", "cancelled").catch(() => undefined);
+          await releaseGeneration(projectId, identity.ownerId, activeGenerationId, activeProject.versions.length > 0 ? "ready" : "draft", "用户中止生成连接", "cancelled").catch(() => undefined);
         } else {
           let audit: AgentAudit | undefined;
           try {
@@ -109,7 +113,7 @@ export async function POST(request: Request) {
             audit = auditFrom(failed);
           } catch { /* preserve the original failure */ }
           emit({ type: "error", message, ...(audit ? { audit } : {}) });
-          await markError(projectId, session.id, activeGenerationId, message, metrics()).catch(() => undefined);
+          await markError(projectId, identity.ownerId, activeGenerationId, message, metrics()).catch(() => undefined);
         }
       } finally {
         if (!generationAbort.signal.aborted) controller.close();
@@ -119,5 +123,5 @@ export async function POST(request: Request) {
       generationAbort.abort();
     },
   });
-  return withVisitorSession(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } }), session);
+  return withWorkspaceIdentity(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } }), identity);
 }

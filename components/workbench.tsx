@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Activity, ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, WandSparkles, X } from "lucide-react";
+import { Activity, ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, UserRound, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
 
@@ -30,6 +30,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [previewError, setPreviewError] = useState("");
   const [notice, setNotice] = useState("");
   const [showVersions, setShowVersions] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const handleEvent = useCallback((event: AgentEvent) => {
@@ -181,7 +182,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
       <header className="workbench-topbar">
         <div className="topbar-left"><button className="icon-button" onClick={() => router.push("/")} aria-label="返回首页"><ArrowLeft size={18} /></button><Link className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></Link><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${generating ? "busy" : ""}`} /> <small>{generating ? "生成中" : "已保存"}</small></div></div>
-        <div className="topbar-actions"><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
+        <div className="topbar-actions"><Link href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></Link><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
       </header>
 
       <aside className="agent-panel">
@@ -213,6 +214,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       </section>
 
       {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}{version.quality ? ` · Ray ${version.quality.score}/100` : ""}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}
+      {showMemory && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowMemory(false)} aria-label="关闭对话记忆" /><aside className="version-drawer memory-drawer"><header><div><span>项目对话记忆</span><small>登录后会随账号跨设备保存</small></div><button className="icon-button" onClick={() => setShowMemory(false)}><X size={18} /></button></header><div className="memory-list">{project.messages.length === 0 ? <div className="memory-empty"><MessageSquareText size={24} /><span>完成一次生成后，对话会出现在这里。</span></div> : project.messages.map((message) => <article className={message.role} key={message.id}><header><strong>{message.role === "user" ? "你" : "Nucleus 团队"}</strong><time>{new Date(message.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header><p>{message.content}</p></article>)}</div></aside></div>}
       {notice && <div className="toast"><Check size={15} />{notice}</div>}
     </main>
   );

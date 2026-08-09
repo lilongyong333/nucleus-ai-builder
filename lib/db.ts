@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { starterFiles } from "./runtime";
-import type { AgentPlan, AppQualityReport, GeneratedFiles, GenerationEvent, GenerationRun, ModelUsage, Project, ProjectVersion } from "./types";
+import type { AgentPlan, AppQualityReport, GeneratedFiles, GenerationEvent, GenerationRun, ModelUsage, Project, ProjectMessage, ProjectVersion } from "./types";
 
 type D1Row = Record<string, string | number | null>;
 
@@ -124,14 +124,27 @@ function runFromRow(row: D1Row, events: GenerationEvent[]): GenerationRun {
   };
 }
 
+function messageFromRow(row: D1Row): ProjectMessage {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    role: String(row.role) as ProjectMessage["role"],
+    content: String(row.content),
+    createdAt: String(row.created_at),
+  };
+}
+
 async function projectFromRow(row: D1Row, includeAudit = true): Promise<Project> {
   const result = await db().prepare(`SELECT * FROM versions WHERE project_id = ? ORDER BY version_number DESC`).bind(String(row.id)).all<D1Row>();
   let runs: GenerationRun[] = [];
+  let messages: ProjectMessage[] = [];
   if (includeAudit) {
     const runRows = await db().prepare(`SELECT * FROM generation_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 10`).bind(String(row.id)).all<D1Row>();
     const eventRows = await db().prepare(`SELECT * FROM agent_events WHERE project_id=? ORDER BY created_at DESC LIMIT 200`).bind(String(row.id)).all<D1Row>();
     const events = (eventRows.results ?? []).map(eventFromRow);
     runs = (runRows.results ?? []).map((run) => runFromRow(run, events.filter((event) => event.runId === String(run.id)).sort((a, b) => a.sequence - b.sequence)));
+    const messageRows = await db().prepare(`SELECT * FROM (SELECT * FROM messages WHERE project_id=? ORDER BY created_at DESC LIMIT 100) ORDER BY created_at ASC`).bind(String(row.id)).all<D1Row>();
+    messages = (messageRows.results ?? []).map(messageFromRow);
   }
   return {
     id: String(row.id),
@@ -147,7 +160,15 @@ async function projectFromRow(row: D1Row, includeAudit = true): Promise<Project>
     updatedAt: String(row.updated_at),
     versions: (result.results ?? []).map(versionFromRow),
     runs,
+    messages,
   };
+}
+
+export async function adoptVisitorProjects(visitorOwnerId: string, accountOwnerId: string): Promise<number> {
+  if (!visitorOwnerId || !accountOwnerId || visitorOwnerId === accountOwnerId) return 0;
+  await ensureSchema();
+  const result = await db().prepare(`UPDATE projects SET owner_id=?, updated_at=? WHERE owner_id=?`).bind(accountOwnerId, new Date().toISOString(), visitorOwnerId).run();
+  return Number(result.meta.changes ?? 0);
 }
 
 export async function createProject(prompt: string, ownerId: string): Promise<Project> {
@@ -205,7 +226,7 @@ export async function beginGeneration(id: string, ownerId: string, prompt: strin
     await db().batch([
       db().prepare(`UPDATE generation_runs SET status='failed', completed_at=?, duration_ms=MAX(0,CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER)), error='生成租约过期，已由新任务回收' WHERE project_id=? AND status='running'`).bind(now, now, id),
       db().prepare(`INSERT INTO generation_runs (id,project_id,prompt,status,model,started_at) VALUES (?,?,?,?,?,?)`).bind(generationId, id, prompt, "running", model, now),
-      db().prepare(`INSERT INTO messages (id,project_id,role,content,created_at) VALUES (?,?,?,?,?)`).bind(crypto.randomUUID(), id, "user", prompt, now),
+      db().prepare(`INSERT INTO messages (id,project_id,role,content,created_at) SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM messages WHERE id=(SELECT id FROM messages WHERE project_id=? ORDER BY created_at DESC LIMIT 1) AND role='user' AND content=?)`).bind(crypto.randomUUID(), id, "user", prompt, now, id, prompt),
     ]);
   } catch (error) {
     await db().prepare(`UPDATE projects SET status=CASE WHEN current_version_id IS NULL THEN 'draft' ELSE 'ready' END, generation_id=NULL, generation_started_at=NULL, updated_at=? WHERE id=? AND owner_id=? AND generation_id=?`).bind(new Date().toISOString(), id, ownerId, generationId).run().catch(() => undefined);

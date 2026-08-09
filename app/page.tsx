@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, Boxes, Clock3, Code2, Layers3, LoaderCircle, Plus, Sparkles } from "lucide-react";
+import { ArrowRight, Boxes, Clock3, Code2, Layers3, LoaderCircle, Plus, Sparkles, UserRound } from "lucide-react";
 import type { Project } from "@/lib/types";
 
 const examples = [
@@ -20,11 +20,12 @@ export default function Home() {
   const [sessionReady, setSessionReady] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [account, setAccount] = useState<{ email: string; displayName: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/projects")
-      .then((r) => r.json() as Promise<{ projects?: Project[] }>)
-      .then((data) => setProjects(data.projects ?? []))
+      .then((r) => r.json() as Promise<{ projects?: Project[]; account?: { email: string; displayName: string } | null }>)
+      .then((data) => { setProjects(data.projects ?? []); setAccount(data.account ?? null); })
       .catch(() => undefined)
       .finally(() => setSessionReady(true));
   }, []);
@@ -50,7 +51,7 @@ export default function Home() {
       <nav className="landing-nav">
         <Link className="brand" href="/"><span className="brand-mark"><Boxes size={18} /></span><span>Nucleus</span></Link>
         <div className="nav-center"><a href="#examples">灵感</a><a href="#how">工作方式</a></div>
-        <a className="nav-cta" href="#create">开始构建 <ArrowRight size={15} /></a>
+        <div className="nav-actions">{account ? <Link className="nav-account" href="/account"><UserRound size={15} /><span>{account.displayName}</span></Link> : <a className="nav-account" href="/signin-with-chatgpt?return_to=%2Faccount"><UserRound size={15} /><span>登录保存</span></a>}<a className="nav-cta" href="#create">开始构建 <ArrowRight size={15} /></a></div>
       </nav>
 
       <section className="hero" id="create">
@@ -63,7 +64,7 @@ export default function Home() {
           <div className="composer-footer"><span><Sparkles size={13} /> OpenCode Go · Kimi Code</span><button onClick={() => void createApp()} disabled={!sessionReady || creating || prompt.trim().length < 3}>{creating || !sessionReady ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}<span>{sessionReady ? "开始构建" : "准备工作区"}</span></button></div>
         </div>
         {error && <p className="form-error">{error}</p>}
-        <p className="composer-hint">按 Ctrl + Enter 提交 · 无需注册即可体验</p>
+        <p className="composer-hint">按 Ctrl + Enter 提交 · {account ? "已登录，项目与对话会跨设备保存" : "无需登录即可体验，登录后可跨设备保存"}</p>
       </section>
 
       <section className="proof-strip" id="how">
@@ -83,7 +84,7 @@ export default function Home() {
         </div>
       </section>
 
-      {projects.length > 0 && <section className="recent-projects"><div className="section-heading"><div><span className="section-kicker">保存在云端</span><h2>最近项目</h2></div></div><div className="recent-grid">{projects.slice(0, 6).map((project) => <button key={project.id} onClick={() => router.push(`/w/${project.id}`)}><span className="recent-icon"><Clock3 size={17} /></span><div><strong>{project.title}</strong><small>{project.status === "ready" ? `${project.versions.length} 个版本` : "等待继续"}</small></div><ArrowRight size={16} /></button>)}</div></section>}
+      {projects.length > 0 && <section className="recent-projects"><div className="section-heading"><div><span className="section-kicker">{account ? "账号云端工作区" : "当前浏览器工作区"}</span><h2>最近项目</h2></div>{account && <Link className="view-all-projects" href="/account">查看项目中心 <ArrowRight size={14} /></Link>}</div><div className="recent-grid">{projects.slice(0, 6).map((project) => <button key={project.id} onClick={() => router.push(`/w/${project.id}`)}><span className="recent-icon"><Clock3 size={17} /></span><div><strong>{project.title}</strong><small>{project.status === "ready" ? `${project.versions.length} 个版本` : "等待继续"}</small></div><ArrowRight size={16} /></button>)}</div></section>}
 
       <footer><Link className="brand" href="/"><span className="brand-mark"><Boxes size={18} /></span><span>Nucleus</span></Link><p>Built for the ROOT full-stack challenge.</p><a href="#create"><Plus size={14} /> 创建新应用</a></footer>
     </main>
