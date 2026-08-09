@@ -284,8 +284,8 @@ glm-5.2 -> qwen3.5-plus
 当前交付在本地和 GitHub CI 同时通过：
 
 ```powershell
-pnpm test             # 30/30
-pnpm test:e2e         # 4/4 Chromium
+pnpm test             # 32/32
+pnpm test:e2e         # 5/5 Chromium（含连续消息队列）
 pnpm lint
 pnpm exec tsc --noEmit
 pnpm build
@@ -296,7 +296,7 @@ pnpm build
 - Git 高置信密钥扫描；
 - GitHub Draft PR；
 - Linux + Chromium CI；
-- Sites version 16 与 commit `feccdf1...` 精确绑定；
+- 每次 Sites version 都与已推送 commit 精确绑定；历史 version 16 对应 `feccdf1...`，后续流式输出与对话工作台版本见 `docs/PROGRESS.md`；
 - 首页与四个公开 Demo HTTP 200；
 - 生产登录、账号中心、复杂交互和固定发布人工验收。
 

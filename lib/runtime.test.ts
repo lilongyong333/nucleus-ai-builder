@@ -8,6 +8,9 @@ describe("preview runtime", () => {
     expect(html).toContain("<script>");
     expect(html).toContain("__nucleus_probe__");
     expect(html).toContain("type:'ready'");
+    expect(html).toContain("type:'console'");
+    expect(html).toContain("['log','info','warn','error']");
+    expect(html).toContain("emitted<200");
     expect(html).toContain("task-form");
   });
 

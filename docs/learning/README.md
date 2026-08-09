@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前生产运行时代码基线：** commit `feccdf10ce462a94b070ae629241cb3110dd4aa4`、Sites production version 16、30 个 Vitest、4 个 Chromium E2E。教学文档提交可以晚于运行时提交。旧版 `docs/learning` 曾停留在独立分支 `agent/teaching-guide`，本次已恢复并升级到账号、记忆、质量门、模型预算、断流恢复和真实生产基准全部落地后的版本。
+> **当前验证基线：** 真实模型 SSE 与对话式工作台已经合并；32 个 Vitest、5 个 Chromium E2E、ESLint、TypeScript 和生产构建组成发布门。Sites production version 号与 Git commit 会在每次发布后写入 `docs/PROGRESS.md`，不要用旧文档中的某个历史 version 判断线上是否最新。
 
 ## 先看结论
 
@@ -14,10 +14,10 @@ Nucleus 是一个 AI 网页应用生成器。用户输入一句需求后，系�
 4. Iris 用本地确定性 SOP 生成结构化产品计划，0 Token、0 模型调用；
 5. Alex 经主备模型网关生成 `index.html`、`styles.css`、`script.js`；
 6. Ray 做 9 项确定性检查，必要时最多一次定向修复；
-7. 通过 NDJSON 把真实 AgentEvent、质量和完成结果发送给浏览器；
+7. 供应商 SSE 分片经 NDJSON 发送真实 AgentEvent、模型进度、质量和完成结果；
 8. 将代码、Version、GenerationRun、AgentEvent 和消息保存到 Cloudflare D1；
 9. 在受限 iframe 中运行并回报 `ready/error/unhandledrejection`；
-10. 支持断流恢复、取消、继续修改、恢复旧版本、固定版本发布和 ZIP 下载。
+10. 支持断流恢复、取消、连续消息队列、语音输入、运行控制台、恢复旧版本、固定版本发布和 ZIP 下载。
 
 自定义域名：<https://www.llynb.cc>
 

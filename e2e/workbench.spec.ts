@@ -93,11 +93,15 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
   await expect(page).toHaveURL(/\/w\/e2e-project$/);
   await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
   await expect(page.locator(".runtime-status.passed")).toContainText("启动校验通过");
-  await expect(page.locator(".quality-score strong")).toHaveText("92");
+  await expect(page.locator(".conversation-feed")).toContainText("制作一个面试计划板");
+  await expect(page.locator(".conversation-quality > strong")).toContainText("92");
   await expect(page.locator(".run-audit-card")).toContainText("200");
+  await page.getByRole("button", { name: "切换控制台" }).click();
+  await expect(page.locator(".runtime-console")).toContainText("应用启动完成");
+  await page.getByRole("button", { name: "关闭控制台" }).click();
   await page.getByRole("button", { name: /对话/ }).click();
   await expect(page.getByText("项目对话记忆")).toBeVisible();
-  await expect(page.getByText("制作一个面试计划板")).toBeVisible();
+  await expect(page.locator(".memory-drawer").getByText("制作一个面试计划板")).toBeVisible();
   await page.getByRole("button", { name: "关闭对话记忆" }).click();
   await page.getByRole("link", { name: "返回首页" }).click();
   await expect(page).toHaveURL(/\/$/);
@@ -122,7 +126,7 @@ test("renders streamed agent review and the completed version", async ({ page })
   await page.getByPlaceholder("告诉团队你想修改什么…").fill("增加任务优先级");
   await page.getByRole("button", { name: "发送修改需求" }).click();
 
-  await expect(page.locator(".quality-score strong")).toHaveText("100");
+  await expect(page.locator(".conversation-quality > strong")).toContainText("100");
   await page.locator(".run-audit-card summary").click();
   await expect(page.locator(".run-audit-card")).toContainText("Iris");
   await expect(page.getByText("v2 已保存")).toBeVisible();
@@ -181,9 +185,44 @@ test("recovers a server-side generation after the browser stream disconnects", a
   });
 
   await page.goto("/w/e2e-project");
-  await expect(page.locator(".timeline")).toContainText("需求分析完成");
+  await expect(page.locator(".agent-step-card")).toContainText("需求分析完成");
   await expect(page.locator(".project-title small")).toHaveText("已保存", { timeout: 8000 });
-  await expect(page.getByRole("heading", { name: "结果已恢复" })).toBeVisible();
+  await page.locator(".agent-step-card summary").click();
+  await expect(page.locator(".agent-step-card")).toContainText("结果已恢复");
   await expect(page.getByRole("button", { name: /版本 v1/ })).toBeVisible();
   expect(generationPosts).toBe(0);
+});
+
+test("queues a second message with Return while the current generation is running", async ({ page }) => {
+  const initialProject = project();
+  const firstCompleted = project(2, finalQuality);
+  const secondCompleted = project(3, finalQuality);
+  let generationPosts = 0;
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
+  await page.route("**/api/generate", async (route) => {
+    generationPosts += 1;
+    const currentCall = generationPosts;
+    await new Promise((resolve) => setTimeout(resolve, currentCall === 1 ? 700 : 120));
+    const completed = currentCall === 1 ? firstCompleted : secondCompleted;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson; charset=utf-8",
+      body: [
+        JSON.stringify({ type: "status", agent: "Iris", title: "理解需求", detail: "正在处理队列消息", state: "working" }),
+        JSON.stringify({ type: "complete", project: completed }),
+      ].join("\n") + "\n",
+    });
+  });
+
+  await page.goto("/w/e2e-project");
+  const composer = page.getByRole("textbox", { name: "修改需求" });
+  await composer.fill("第一条：增加搜索功能");
+  await composer.press("Enter");
+  await expect(page.locator(".project-title small")).toHaveText("生成中");
+  await composer.fill("第二条：增加深色模式");
+  await composer.press("Enter");
+  await expect(page.locator(".message-queue")).toContainText("第二条：增加深色模式");
+  await expect.poll(() => generationPosts, { timeout: 5000 }).toBe(2);
+  await expect(page.getByRole("button", { name: /版本 v3/ })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator(".message-queue")).toHaveCount(0);
 });

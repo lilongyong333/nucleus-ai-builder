@@ -54,8 +54,12 @@ if (value.status === "draft" && value.versions.length === 0 && !startedRef.curre
 | 状态 | 类型 | 用途 |
 |---|---|---|
 | `project` | `Project \| null` | 当前项目和所有版本 |
-| `generating` | `boolean` | 禁用重复提交、显示加载态 |
+| `generating` | `boolean` | 标记当前浏览器请求并显示加载态 |
+| `activePrompt` | `string \| null` | 服务端消息回写前的即时用户消息 |
+| `queuedPrompts` | `QueuedPrompt[]` | 当前生成期间排队的后续要求 |
+| `queuePaused` | `boolean` | 用户停止后阻止队列自动续跑 |
 | `timeline` | `TimelineItem[]` | Agent 工作事件 |
+| `liveStream` | `LiveStreamState \| null` | 当前模型真实分片、字符数和阶段 |
 | `livePlan` | `AgentPlan \| null` | 尚未保存时先展示计划 |
 | `activeTab` | `preview/code` | 预览与代码切换 |
 | `activeFile` | 三个文件之一 | 代码面板当前文件 |
@@ -63,7 +67,8 @@ if (value.status === "draft" && value.versions.length === 0 && !startedRef.curre
 | `previewError` | `string` | iframe 运行错误 |
 | `previewState` | `checking/passed/error` | 沙箱启动校验状态 |
 | `liveQuality` | `AppQualityReport` | Ray 当前轮质量结果 |
-| `recovering` | `boolean` | 浏览器断流后等待服务端终态 |
+| `consoleEntries` | `ConsoleEntry[]` | iframe 转发的真实运行日志 |
+| `showConsole` | `boolean` | 运行控制台开关 |
 | `showVersions` | `boolean` | 版本抽屉开关 |
 | `showMemory` | `boolean` | 最近项目对话抽屉 |
 
@@ -75,6 +80,7 @@ React state 的核心思想是：数据改变后，组件重新计算要显示�
 
 ```text
 {"type":"status","agent":"Iris",...}
+{"type":"progress","agent":"Alex","delta":"<main",...}
 {"type":"plan","plan":{...}}
 {"type":"file","path":"index.html","size":4200}
 {"type":"review","report":{"score":100,"grade":"A",...}}
@@ -96,6 +102,7 @@ React state 的核心思想是：数据改变后，组件重新计算要显示�
 `handleEvent()` 是一个小型状态机：
 
 - `status`：在时间线加入或替换某个 Agent 的工作状态；
+- `progress`：拼接模型 SSE 内容尾部、累计真实字符数，并同时更新对话与右侧浮层；
 - `plan`：即时显示产品计划；
 - `file`：显示某文件已写入；
 - `review`：即时显示 Ray 分数与 9 项检查；
@@ -172,7 +179,49 @@ JSZip 使用动态 `import()`，因为只有点击下载时才需要，减少首
 
 工作台项目详情最多读取最近 100 条消息；对话记忆抽屉只是展示 D1 消息，不是浏览器 localStorage。
 
-## 13. 初学者修改前端的安全顺序
+## 13. 对话工作区、队列、语音和控制台
+
+### 消息怎样和 Agent 步骤排在一起
+
+`project.messages` 是服务端持久化的事实。前端另外维护一个 `activePrompt`，让用户点击发送后不必等 D1 再读一次就能立刻看到自己的消息。`complete.project` 到达后包含正式 Message，前端清掉 optimistic activePrompt，避免重复。
+
+最近一轮 Run 的 `prompt` 会匹配最近一条相同内容的 user Message。`AgentActivityPanel` 被插入在这条消息之后、assistant 总结之前，因此读起来是：
+
+```text
+用户要求
+  -> Iris / Bob / Alex / Ray 已处理步骤
+  -> 真实模型分片与字符数
+  -> 计划 / Ray 分数 / 运行审计
+  -> Alex 的交付总结
+```
+
+刷新页面时本地 `timeline` 可能为空，此时用 `timelineFromProject(project)` 从最近 Run 的 D1 Events 重建，历史证据不会因为 React state 丢失。
+
+### 为什么队列在前端，互斥仍在服务端
+
+同一个项目不能并发生成，否则两个结果会争抢当前版本。用户在生成中按 Return 时，前端把 `{id, content, createdAt}` 放入 `queuedPrompts`。当前请求和服务端状态都结束后，effect 才取下一条调用 `runGenerate()`。
+
+这只是好用的交互层。正确性仍由 D1 `generation_id` 租约保证；即使两个浏览器同时操作，第二个请求也会收到 409。点击停止后 `queuePaused=true`，不会偷偷启动下一条。
+
+### Return、Shift+Return 与中文输入法
+
+`onKeyDown` 只有同时满足以下条件才发送：
+
+- `event.key === "Enter"`；
+- 没有按 Shift；
+- `event.nativeEvent.isComposing === false`。
+
+最后一条很重要。中文输入法选字时也会触发 Enter；忽略 composing 会把半截拼音误发送。
+
+### 语音输入怎样降级
+
+浏览器存在 `SpeechRecognition` 或 `webkitSpeechRecognition` 时，点击麦克风会启动一次 `zh-CN` 识别并把最终 transcript 追加到文本框。结束、错误和组件卸载都会停止并释放对象。不支持该 API 时只显示提示，不影响键盘输入。
+
+### 运行控制台不是装饰
+
+`composePreview()` 在沙箱里包装 `console.log/info/warn/error`，通过已经存在的 `nucleus-preview` 消息桥转发。单次 iframe 最多转发 200 条，避免生成应用用高频日志拖垮主界面；工作台验证 `event.source === iframe.contentWindow` 后，只保留最近 100 条到 `consoleEntries`。同一控制台还显示 ready、window error 和 unhandledrejection，清空和关闭按钮都是真的。
+
+## 14. 初学者修改前端的安全顺序
 
 1. 只改文案，运行页面；
 2. 只改 `app/globals.css` 中一个颜色；
