@@ -7,6 +7,14 @@ export const canonicalFileResponsibilities: Record<keyof GeneratedFiles, string>
   "script.js": "完整独立原生 JavaScript；负责状态机、业务规则、交互、持久化与错误处理，不得包含 HTML 或 CSS。",
 };
 
+export function normalizeArtifactContent(path: keyof GeneratedFiles, content: string): string {
+  if (path !== "index.html") return content.trim();
+  return content
+    .replace(/<link\b(?=[^>]*\bhref\s*=\s*["'](?:\.\/)?styles\.css(?:\?[^"']*)?["'])[^>]*>\s*/gi, "")
+    .replace(/<script\b(?=[^>]*\bsrc\s*=\s*["'](?:\.\/)?script\.js(?:\?[^"']*)?["'])[^>]*>\s*<\/script\s*>\s*/gi, "")
+    .trim();
+}
+
 export function artifactProtocolViolation(path: keyof GeneratedFiles, content: string): string | null {
   const source = content.trim();
   if (/```|\{\s*path\s*=\s*/i.test(source)) return `${path} 仍包含 Markdown 围栏或文件协议标记`;

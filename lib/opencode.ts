@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { artifactProtocolViolation, canonicalFileResponsibilities } from "./artifact-protocol";
+import { artifactProtocolViolation, canonicalFileResponsibilities, normalizeArtifactContent } from "./artifact-protocol";
 import { createModelBudget, requestChat, type ChatMessage, type GatewayChatResult, type ModelAttempt, type ModelBudget } from "./model-gateway";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { planFromPrompt } from "./planner";
@@ -219,7 +219,7 @@ export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: strin
     { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
     { role: "user", content: `${requestContext}\n\nIris contract:\n${JSON.stringify(plan)}\n\nScoped Bob handoff for ${path}:\n${JSON.stringify(scopedArchitecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Other agents own the other files. Do not output or re-create any other path.` },
   ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, codeChatOptions());
-  const content = extractSingleFile(path, result.content);
+  const content = normalizeArtifactContent(path, extractSingleFile(path, result.content));
   if (content.length < 40) throw new AgentOutputError(`${path} 输出过短，未形成可用工件`, result);
   if (content.length > 120_000) throw new AgentOutputError(`${path} 超过 120KB 安全上限`, result);
   const violation = artifactProtocolViolation(path, content);
@@ -267,11 +267,14 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
     { role: "system", content: "You are Ray acting as the repair engineer. Fix every concrete error in the QA report while preserving working behavior. Return only the complete changed files as markdown code blocks with exact {path=index.html}, {path=styles.css}, or {path=script.js} opening-line metadata. Do not return unchanged files, explanations, summaries, or JSON. Never put markdown fences inside a file." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nQA report:\n${JSON.stringify(review)}\n\nCurrent files:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
   ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, codeChatOptions());
-  const changed = extractGeneratedFiles(result.content);
-  if (Object.keys(changed).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
-  for (const [path, content] of Object.entries(changed) as Array<[keyof GeneratedFiles, string]>) {
+  const extracted = extractGeneratedFiles(result.content);
+  if (Object.keys(extracted).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
+  const changed: Partial<GeneratedFiles> = {};
+  for (const [path, rawContent] of Object.entries(extracted) as Array<[keyof GeneratedFiles, string]>) {
+    const content = normalizeArtifactContent(path, rawContent);
     const violation = artifactProtocolViolation(path, content);
     if (violation) throw new AgentOutputError(`Ray 修复工件无效：${violation}`, result);
+    changed[path] = content;
   }
   return modelResult(changed, result, startedAt);
 }
