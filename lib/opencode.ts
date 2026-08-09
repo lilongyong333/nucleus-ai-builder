@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
-import type { AgentPlan, GeneratedFiles } from "./types";
+import { qualityRepairBrief, reviewGeneratedApp } from "./quality";
+import type { AgentPlan, AppQualityReport, GeneratedFiles } from "./types";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -66,9 +67,9 @@ export async function createPlan(prompt: string, currentFiles?: GeneratedFiles):
   };
 }
 
-export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles): Promise<{ files: GeneratedFiles; summary: string }> {
+export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles): Promise<{ files: GeneratedFiles; summary: string; quality: AppQualityReport }> {
   const existing = currentFiles ? `\nExisting files to improve:\n${Object.entries(currentFiles).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` : "";
-  const raw = await chat([
+  let raw = await chat([
     { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
   ], 8000);
@@ -80,8 +81,23 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
         { role: "system", content: `You are repairing an incomplete artifact. Return only markdown code blocks for these missing files: ${missing.join(", ")}. Use the exact {path=filename} opening-line format. Do not repeat files that already exist. No reasoning.` },
         { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nExisting generated files:\n${Object.entries(partial).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
       ], 5000);
-      return parseGeneratedReply(`${raw}\n${repair}`, `完成 ${plan.appName}`);
+      raw = `${raw}\n${repair}`;
     }
   }
-  return parseGeneratedReply(raw, `完成 ${plan.appName}`, currentFiles);
+  let parsed = parseGeneratedReply(raw, `完成 ${plan.appName}`, currentFiles);
+  let quality = reviewGeneratedApp(parsed.files);
+
+  if (!quality.passed) {
+    const repair = await chat([
+      { role: "system", content: "You are Ray, a senior frontend QA engineer. Repair the supplied browser app so every reported quality issue is resolved without removing working features. Return only the changed files as markdown code blocks using the exact {path=filename} format. Do not include reasoning, JSON, or unchanged files." },
+      { role: "user", content: `Original request: ${prompt}\nPlan: ${JSON.stringify(plan)}\nQuality report:\n${qualityRepairBrief(quality)}\n\nFiles to repair:\n${Object.entries(parsed.files).map(([path, content]) => `--- ${path} ---\n${content}`).join("\n")}` },
+    ], 6000);
+    parsed = parseGeneratedReply(repair, parsed.summary, parsed.files);
+    quality = reviewGeneratedApp(parsed.files);
+  }
+
+  if (!quality.passed) {
+    throw new Error(`Ray 质量门未通过：${qualityRepairBrief(quality).replace(/\n/g, "；").slice(0, 320)}`);
+  }
+  return { ...parsed, quality };
 }

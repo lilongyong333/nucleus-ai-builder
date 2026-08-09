@@ -11,6 +11,22 @@ export type AgentPlan = {
   design: string;
 };
 
+export type AppQualityCheck = {
+  id: string;
+  label: string;
+  severity: "pass" | "warning" | "error";
+  detail: string;
+  weight: number;
+};
+
+export type AppQualityReport = {
+  score: number;
+  grade: "A" | "B" | "C" | "D";
+  passed: boolean;
+  checks: AppQualityCheck[];
+  summary: string;
+};
+
 export type ProjectVersion = {
   id: string;
   projectId: string;
@@ -18,6 +34,7 @@ export type ProjectVersion = {
   files: GeneratedFiles;
   summary: string;
   model: string;
+  quality: AppQualityReport | null;
   createdAt: string;
 };
 
@@ -39,5 +56,6 @@ export type AgentEvent =
   | { type: "status"; agent: string; title: string; detail: string; state: "working" | "done" }
   | { type: "plan"; plan: AgentPlan }
   | { type: "file"; path: keyof GeneratedFiles; size: number }
+  | { type: "review"; report: AppQualityReport }
   | { type: "complete"; project: Project }
   | { type: "error"; message: string };

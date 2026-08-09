@@ -97,3 +97,16 @@ Production      passed
 - 生成应用的 storage 在每次预览页面生命周期内有效，不是 Nucleus D1 数据；
 - 公开链接通过随机化 slug 分享，尚未实现细粒度权限；
 - 默认模型响应通常需要 25–60 秒，取决于输出规模和服务负载。
+
+## MetaGPT-inspired 质量闭环
+
+在审阅 MetaGPT 官方仓库的 Role / Action / Message / Environment 和 QA 测试循环后，Nucleus 增加了真实的 Ray 质量门，而不是只显示检查状态：
+
+- Acorn 解析模型生成的 JavaScript AST，不执行生成代码；
+- 覆盖语法、安全、真实交互、语义 HTML、移动 viewport、响应式 CSS、表单可访问名称、键盘焦点和自包含交付 9 项规则；
+- 阻断 `eval`、动态 Function、`document.write` 和跨窗口 DOM 等高风险调用；
+- 首次不通过时，把结构化问题交给 Ray 定向修复并重新执行全部检查；
+- 只有通过质量门的文件才能保存为版本；
+- 每个版本在 D1 持久化 0–100 分、A–D 等级和逐项结果；
+- 工作台和版本历史展示质量结果；
+- 自动测试从 6 个增加到 11 个，并新增 GitHub Actions CI。

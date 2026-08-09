@@ -39,9 +39,10 @@ export async function POST(request: Request) {
         }
         emit({ type: "status", agent: "Alex", title: "代码完成", detail: "3 个文件已写入版本快照", state: "done" });
         emit({ type: "status", agent: "Ray", title: "交付检查", detail: "校验文件完整性与预览安全边界", state: "working" });
+        emit({ type: "review", report: result.quality });
 
-        const saved = await saveGeneration(projectId, plan, result.files, result.summary, activeModel());
-        emit({ type: "status", agent: "Ray", title: "可以预览", detail: "生成物已保存，可回滚、分享和下载", state: "done" });
+        const saved = await saveGeneration(projectId, plan, result.files, result.summary, activeModel(), result.quality);
+        emit({ type: "status", agent: "Ray", title: `质量门 ${result.quality.grade} 级`, detail: `${result.quality.score}/100 · 生成物已保存，可回滚、分享和下载`, state: "done" });
         emit({ type: "complete", project: saved });
       } catch (error) {
         await markError(projectId).catch(() => undefined);

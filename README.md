@@ -17,8 +17,9 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注�
 - 桌面 / 手机预览切换和源码查看
 - 基于当前版本继续对话修改
 - 运行错误回传，并可一键交给 Ray 修复
+- Ray 质量门：9 项语法、安全、交互与体验检查，失败自动定向修复
 - Cloudflare D1 云端项目、消息和版本持久化
-- 全量版本快照、历史版本恢复
+- 全量版本快照、质量评分持久化、历史版本恢复
 - 公开发布页 `/p/[slug]`
 - ZIP 源码下载
 - 游客直接体验，无登录门槛
@@ -90,6 +91,7 @@ pnpm build
 ## 文档
 
 - [架构与取舍](docs/DESIGN.md)
+- [与 MetaGPT / Atoms 的差距分析与优化路线](docs/METAGPT-GAP-ANALYSIS.md)
 - [开发进度与验收记录](docs/PROGRESS.md)
 - [提交说明](docs/SUBMISSION.md)
 - [后续开发计划](docs/DEV-PLAN.md)

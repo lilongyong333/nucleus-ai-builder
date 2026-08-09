@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { starterFiles } from "./runtime";
-import type { AgentPlan, GeneratedFiles, Project, ProjectVersion } from "./types";
+import type { AgentPlan, AppQualityReport, GeneratedFiles, Project, ProjectVersion } from "./types";
 
 type D1Row = Record<string, string | number | null>;
 
@@ -17,7 +17,7 @@ export function ensureSchema(): Promise<void> {
     const d1 = db();
     const pending = d1.batch([
       d1.prepare(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT, files_json TEXT NOT NULL, current_version_id TEXT, slug TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
-      d1.prepare(`CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_number INTEGER NOT NULL, files_json TEXT NOT NULL, summary TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL)`),
+      d1.prepare(`CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_number INTEGER NOT NULL, files_json TEXT NOT NULL, summary TEXT NOT NULL, model TEXT NOT NULL, quality_json TEXT, created_at TEXT NOT NULL)`),
       d1.prepare(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)`),
       d1.prepare(`CREATE INDEX IF NOT EXISTS idx_versions_project_created ON versions(project_id, created_at)`),
       d1.prepare(`CREATE INDEX IF NOT EXISTS idx_messages_project_created ON messages(project_id, created_at)`),
@@ -42,6 +42,7 @@ function versionFromRow(row: D1Row): ProjectVersion {
     files: json(row.files_json, starterFiles),
     summary: String(row.summary),
     model: String(row.model),
+    quality: json<AppQualityReport | null>(row.quality_json, null),
     createdAt: String(row.created_at),
   };
 }
@@ -96,14 +97,14 @@ export async function markGenerating(id: string, prompt: string): Promise<void> 
   ]);
 }
 
-export async function saveGeneration(id: string, plan: AgentPlan, files: GeneratedFiles, summary: string, model: string): Promise<Project> {
+export async function saveGeneration(id: string, plan: AgentPlan, files: GeneratedFiles, summary: string, model: string, quality: AppQualityReport): Promise<Project> {
   await ensureSchema();
   const count = await db().prepare(`SELECT COUNT(*) AS total FROM versions WHERE project_id=?`).bind(id).first<{ total: number }>();
   const versionNumber = Number(count?.total ?? 0) + 1;
   const versionId = crypto.randomUUID();
   const now = new Date().toISOString();
   await db().batch([
-    db().prepare(`INSERT INTO versions (id,project_id,version_number,files_json,summary,model,created_at) VALUES (?,?,?,?,?,?,?)`).bind(versionId, id, versionNumber, JSON.stringify(files), summary, model, now),
+    db().prepare(`INSERT INTO versions (id,project_id,version_number,files_json,summary,model,quality_json,created_at) VALUES (?,?,?,?,?,?,?,?)`).bind(versionId, id, versionNumber, JSON.stringify(files), summary, model, JSON.stringify(quality), now),
     db().prepare(`UPDATE projects SET title=?, status='ready', plan_json=?, files_json=?, current_version_id=?, updated_at=? WHERE id=?`).bind(plan.appName, JSON.stringify(plan), JSON.stringify(files), versionId, now, id),
     db().prepare(`INSERT INTO messages (id,project_id,role,content,created_at) VALUES (?,?,?,?,?)`).bind(crypto.randomUUID(), id, "assistant", summary, now),
   ]);

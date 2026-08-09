@@ -1,0 +1,1 @@
+ALTER TABLE `versions` ADD `quality_json` text;

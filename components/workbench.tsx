@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, Smartphone, Sparkles, WandSparkles, X } from "lucide-react";
+import { ArrowLeft, Bot, Boxes, Check, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, LoaderCircle, Maximize2, MessageSquareText, Monitor, PanelLeftClose, Play, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
-import type { AgentEvent, AgentPlan, GeneratedFiles, Project } from "@/lib/types";
+import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project } from "@/lib/types";
 
 type TimelineItem = { id: string; agent: string; title: string; detail: string; state: "working" | "done" | "error"; time: string };
 
@@ -21,6 +21,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [requestText, setRequestText] = useState("");
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [livePlan, setLivePlan] = useState<AgentPlan | null>(null);
+  const [liveQuality, setLiveQuality] = useState<AppQualityReport | null>(null);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [activeFile, setActiveFile] = useState<keyof GeneratedFiles>("index.html");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
@@ -36,9 +37,12 @@ export function Workbench({ projectId }: { projectId: string }) {
       setLivePlan(event.plan);
     } else if (event.type === "file") {
       setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Alex", title: `写入 ${event.path}`, detail: `${Math.max(1, Math.round(event.size / 1000))} KB · 已完成`, state: "done", time: nowTime() }]);
+    } else if (event.type === "review") {
+      setLiveQuality(event.report);
     } else if (event.type === "complete") {
       setProject(event.project);
       setLivePlan(event.project.plan);
+      setLiveQuality(currentQuality(event.project));
       setActiveTab("preview");
       setNotice(`v${event.project.versions[0]?.versionNumber ?? 1} 已保存`);
     } else if (event.type === "error") {
@@ -53,6 +57,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     setPreviewError("");
     setTimeline([]);
     setLivePlan(null);
+    setLiveQuality(null);
     setRequestText("");
     try {
       const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, prompt: clean }) });
@@ -90,6 +95,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       if (!response.ok) throw new Error(data.error || "项目不存在");
       setProject(data.project);
       setLivePlan(data.project.plan);
+      setLiveQuality(currentQuality(data.project));
       return data.project as Project;
     }).then((value) => {
       if (value.versions.length === 0 && !startedRef.current) {
@@ -120,7 +126,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     const response = await fetch(`/api/projects/${projectId}/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ versionId }) });
     const data = await response.json() as { error?: string; project: Project };
     if (!response.ok) return setNotice(data.error || "恢复失败");
-    setProject(data.project); setShowVersions(false); setNotice("版本已恢复"); setActiveTab("preview");
+    setProject(data.project); setLiveQuality(currentQuality(data.project)); setShowVersions(false); setNotice("版本已恢复"); setActiveTab("preview");
   }
 
   async function publish() {
@@ -166,6 +172,8 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {(livePlan || project.plan) && <div className="plan-card"><span><WandSparkles size={14} /> 当前计划</span><strong>{(livePlan || project.plan)?.summary}</strong><ul>{(livePlan || project.plan)?.features.slice(0, 4).map((feature) => <li key={feature}><Check size={11} />{feature}</li>)}</ul></div>}
 
+        {liveQuality && <div className={`quality-card ${liveQuality.passed ? "passed" : "failed"}`}><header><span><ShieldCheck size={13} /> Ray 质量门</span><b>{liveQuality.grade}</b></header><div className="quality-score"><strong>{liveQuality.score}</strong><span>/100</span><i><em style={{ width: `${liveQuality.score}%` }} /></i></div><footer><span>{liveQuality.checks.filter((check) => check.severity === "pass").length}/{liveQuality.checks.length} 项通过</span><small>{liveQuality.checks.find((check) => check.severity !== "pass")?.label ?? "语法、安全、交互与体验均已验证"}</small></footer></div>}
+
         <form className="iteration-box" onSubmit={(event) => { event.preventDefault(); void runGenerate(requestText); }}><textarea value={requestText} onChange={(e) => setRequestText(e.target.value)} placeholder="告诉团队你想修改什么…" disabled={generating} /><div><span><MessageSquareText size={13} /> 继续迭代</span><button disabled={generating || requestText.trim().length < 3} aria-label="发送修改需求">{generating ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div></form>
       </aside>
 
@@ -179,7 +187,7 @@ export function Workbench({ projectId }: { projectId: string }) {
         {activeTab === "preview" ? <div className={`preview-stage ${device}`}><div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
       </section>
 
-      {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}
+      {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}{version.quality ? ` · Ray ${version.quality.score}/100` : ""}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}
       {notice && <div className="toast"><Check size={15} />{notice}</div>}
     </main>
   );
@@ -187,3 +195,4 @@ export function Workbench({ projectId }: { projectId: string }) {
 
 function nowTime() { return new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }); }
 function slugify(value: string) { return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-").replace(/^-|-$/g, "") || "nucleus-app"; }
+function currentQuality(project: Project): AppQualityReport | null { return project.versions.find((version) => version.id === project.currentVersionId)?.quality ?? project.versions[0]?.quality ?? null; }

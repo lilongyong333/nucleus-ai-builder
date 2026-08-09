@@ -20,6 +20,7 @@ export const versions = sqliteTable("versions", {
   filesJson: text("files_json").notNull(),
   summary: text("summary").notNull(),
   model: text("model").notNull(),
+  qualityJson: text("quality_json"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_versions_project_created").on(table.projectId, table.createdAt)]);
 
