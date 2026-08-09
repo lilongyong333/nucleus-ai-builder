@@ -110,3 +110,15 @@ Production      passed
 - 每个版本在 D1 持久化 0–100 分、A–D 等级和逐项结果；
 - 工作台和版本历史展示质量结果；
 - 自动测试从 6 个增加到 11 个，并新增 GitHub Actions CI。
+
+## 第二轮：生产可靠性与交付一致性
+
+- 用 32 位随机 HttpOnly Cookie 建立匿名工作区，所有私有项目 API 都要求会话所有权；跨会话读取返回 404；
+- 为旧数据保留一次性认领迁移路径，新建项目从创建时即绑定所有者；
+- 同一项目使用带随机 generation ID 的原子租约，只允许一个活跃生成任务；10 分钟后可回收异常遗留租约；
+- 工作台提供“取消生成”，原请求的 AbortSignal 会传到规划、构建、补文件和 Ray 修复；显式取消 API 同时撤销数据库租约；
+- 失败或取消只释放自己的 generation ID，过期任务不能覆盖新任务状态；
+- 发布时写入 `published_version_id`，公开页读取不可变版本快照；迁移会冻结已有公开链接当前版本；
+- 版本号增加 `(project_id, version_number)` 唯一索引，作为并发写入的数据库级最后防线；
+- 新增 3 个会话单元测试和 2 个 Playwright 浏览器 E2E；自动验证现为 Vitest 14/14 + Playwright 2/2；
+- GitHub Actions 会在 Linux 上完成依赖安装、单测、Lint、类型检查、生产构建和 Chromium E2E。
