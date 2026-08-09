@@ -26,7 +26,7 @@ Cloudflare Worker
 
 External
 ├─ OpenCode Go：规划与代码生成
-└─ D1：Project / Message / Version
+└─ D1：Project / Message / Version / GenerationRun / AgentEvent
 ```
 
 ## 为什么模型输出不用大 JSON
@@ -67,6 +67,10 @@ External
 - `projects`：匿名所有者、标题、当前文件、当前/已发布版本、生成租约和公开 slug；
 - `messages`：用户和智能体摘要，保留迭代语义；
 - `versions`：每轮完整三文件快照、模型和说明。
+- `generation_runs`：每轮生成的提示词、状态、模型、起止时间、Token、模型调用/修复次数、关联版本和失败原因；
+- `agent_events`：Iris、Bob、Alex、Ray 每个阶段的有序事件、状态、耗时、模型和阶段用量。
+
+工作台只读取最近 10 次运行和最多 200 条事件；项目列表和公开页面不携带审计数据，避免无关查询与私有执行信息泄露。`(run_id, sequence)` 唯一索引保证同一运行的事件顺序不重复。取消或过期后，新的事件插入和版本保存都会验证运行仍为 `running`，因此迟到响应不能污染已经终止的运行。
 
 版本采用全量快照而不是 diff。单个演示应用通常只有几十 KB，全量快照的恢复逻辑更简单、更可靠，也更容易在面试中解释。
 

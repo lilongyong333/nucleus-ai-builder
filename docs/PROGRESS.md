@@ -60,7 +60,8 @@
 ## 自动化结果
 
 ```text
-Vitest          6 / 6 passed
+Vitest          18 / 18 passed
+Playwright      2 / 2 passed
 TypeScript      passed
 ESLint          passed
 Production      passed
@@ -97,6 +98,25 @@ Production      passed
 - 生成应用的 storage 在每次预览页面生命周期内有效，不是 Nucleus D1 数据；
 - 公开链接通过随机化 slug 分享，尚未实现细粒度权限；
 - 默认模型响应通常需要 25–60 秒，取决于输出规模和服务负载。
+
+## 第三轮：可审计的多智能体运行
+
+- 新增 `generation_runs` 和 `agent_events` 两类 D1 工件，不再只把 Agent 协作显示成前端动画；
+- 同一 generation ID 同时作为运行 ID，保存提示词、模型、开始/结束时间、总耗时、Token、模型调用数、Ray 修复次数、关联版本和终止原因；
+- Iris、Bob、Alex、Ray 的需求、架构、实现、文件工件、质量门和失败阶段按严格递增序号持久化；
+- OpenAI-compatible `usage` 会被标准化并跨空响应重试、缺失文件补全和 Ray 修复调用累加；供应商不返回 usage 时明确显示 `—`，不伪造数字；
+- 工作台新增可展开“执行审计”卡片，显示最近一轮状态、耗时、Token、模型调用、事件数量、模型和修复次数；
+- 项目详情返回最近 10 次运行；项目列表和公开发布页不返回私有审计轨迹；
+- 取消、配额拒绝、模型失败、过期回收和成功保存都有终态。事件插入和版本保存必须再次验证运行仍为 `running`，阻止取消后的迟到响应落库；
+- migration `0005_fuzzy_phantom_reporter.sql` 已生成并检查，运行时初始化兼容已有 D1，索引后执行 `PRAGMA optimize`。
+
+### 第三轮验证证据
+
+- TypeScript、ESLint、生产构建均通过；
+- Vitest 18/18：新增 usage 规范化/累加测试，以及模型失败时终态事件和 metrics 持久化测试；
+- Playwright 2/2：工作台能显示运行摘要，并可展开查看 Agent 事件；
+- 真实本地 D1 取消链路：创建 201、生成流 200、取消 200、读取 200；项目回到 `draft`，运行状态为 `cancelled`，耗时 184ms，版本数为 0，已保存 1 条取消前事件；
+- 真实模型完成态、GitHub CI 与新版线上部署结果在本轮提交发布后补充。
 
 ## MetaGPT-inspired 质量闭环
 
