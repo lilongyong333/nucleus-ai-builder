@@ -122,3 +122,13 @@ Production      passed
 - 版本号增加 `(project_id, version_number)` 唯一索引，作为并发写入的数据库级最后防线；
 - 新增 3 个会话单元测试和 2 个 Playwright 浏览器 E2E；自动验证现为 Vitest 14/14 + Playwright 2/2；
 - GitHub Actions 会在 Linux 上完成依赖安装、单测、Lint、类型检查、生产构建和 Chromium E2E。
+
+### 第二轮生产验收
+
+- Sites 版本 8 从提交 `5655d9efcc1960733558b6181c1d600e0fa89e3c` 发布成功；
+- 两个独立 Cookie 会话：所有者读取项目返回 200，另一会话读取相同 UUID 返回 404，项目列表也不泄露；
+- 同一项目首个生成请求返回 200，第二个并发请求返回 409；显式取消返回 200，项目恢复 `draft` 且没有产生版本；
+- 发布冻结专用项目先生成并发布 v1，再生成包含唯一文本 `IMMUTABLE DRAFT 3` 的 v2；
+- v2 私有文件包含该文本，但未重新发布的公开页前后均不包含；数据库中 `currentVersionId` 与 `publishedVersionId` 指向不同版本；
+- v2 Ray 质量结果为 100/A 且通过；公开 v1 页面 HTTP 200：`https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a`；
+- Node/undici 自动化会被站点边缘 Bot 防护返回 403；浏览器型 PowerShell 和 .NET HttpClient 在获得边缘 Cookie 后均可正常验收。该 403 与应用 API 授权状态分开记录。
