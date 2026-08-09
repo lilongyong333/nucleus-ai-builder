@@ -9,6 +9,59 @@ export type AgentPlan = {
   summary: string;
   features: string[];
   design: string;
+  acceptanceCriteria?: string[];
+  risks?: string[];
+  archetype?: string;
+  testPlan?: string[];
+};
+
+export type AgentName = "Iris" | "Bob" | "Alex" | "Ray";
+
+export type GenerationStage =
+  | "requirements"
+  | "architecture"
+  | "implementation:index.html"
+  | "implementation:styles.css"
+  | "implementation:script.js"
+  | "quality"
+  | "repair"
+  | "finalize"
+  | "completed";
+
+export type GenerationArtifactKind =
+  | "requirements"
+  | "architecture"
+  | "index.html"
+  | "styles.css"
+  | "script.js"
+  | "quality";
+
+export type GenerationArtifact = {
+  id: string;
+  runId: string;
+  projectId: string;
+  agent: AgentName;
+  kind: GenerationArtifactKind;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ModelAttemptRecord = {
+  id: string;
+  runId: string;
+  projectId: string;
+  agent: AgentName;
+  phase: string;
+  model: string;
+  status: "success" | "empty" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
+  durationMs: number;
+  firstTokenMs: number | null;
+  outputChars: number;
+  statusCode: number | null;
+  usage: ModelUsage;
+  error: string | null;
+  createdAt: string;
 };
 
 export type AppQualityCheck = {
@@ -63,7 +116,10 @@ export type GenerationRun = {
   repairCount: number;
   versionId: string | null;
   error: string | null;
+  currentStage: GenerationStage;
   events: GenerationEvent[];
+  artifacts: GenerationArtifact[];
+  attempts: ModelAttemptRecord[];
 };
 
 export type ProjectMessage = {
@@ -114,10 +170,12 @@ export type AgentAudit = {
 
 export type AgentEvent = (
   | { type: "status"; agent: string; title: string; detail: string; state: "working" | "done" }
-  | { type: "progress"; agent: "Alex" | "Ray"; phase: string; label: string; delta: string; totalChars: number; done: boolean; model: string }
+  | { type: "progress"; agent: AgentName; phase: string; label: string; delta: string; totalChars: number; done: boolean; model: string }
   | { type: "plan"; plan: AgentPlan }
   | { type: "file"; path: keyof GeneratedFiles; size: number }
+  | { type: "artifact"; artifact: GenerationArtifact }
+  | { type: "step_complete"; runId: string; stage: GenerationStage; nextStage: GenerationStage; terminal: boolean }
   | { type: "review"; report: AppQualityReport }
   | { type: "complete"; project: Project }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; retryable?: boolean; stage?: GenerationStage }
 ) & { audit?: AgentAudit };

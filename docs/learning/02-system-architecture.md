@@ -7,9 +7,9 @@ flowchart LR
     U["用户浏览器"] -->|"HTTP / NDJSON"| W["Vinext App + Cloudflare Worker"]
     S["Sites Sign in with ChatGPT"] -->|"受信身份头"| W
     W --> Iden["Identity / Ownership / Lease"]
-    W --> P["Iris deterministic SOP"]
-    W -->|"主备 + 预算"| M["OpenCode Go 模型"]
-    W --> Q["Ray 9 项质量门"]
+    W --> SFlow["Durable Run / Stage State Machine"]
+    SFlow -->|"主备 + 两层预算"| M["OpenCode Go 模型"]
+    SFlow --> Q["Ray 通用 + 类型专项 + 模型审查"]
     W -->|"D1 Binding"| D[("Cloudflare D1")]
     W -->|"HTML/CSS/JS"| U
     U -->|"srcDoc"| I["Sandbox iframe"]
@@ -23,27 +23,32 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant B as 浏览器
-    participant A as /api/generate
+    participant R as /api/runs
+    participant S as /api/runs/:id/step
     participant D as D1
     participant M as OpenCode Go
     participant I as iframe
 
-    B->>A: POST projectId + prompt
-    A->>A: 解析游客/ChatGPT 身份
-    A->>D: 检查 owner、额度、获取 generation_id 租约
-    A->>D: 创建 GenerationRun
-    A->>A: Iris 本地 SOP 生成 AgentPlan（0 Token）
-    A-->>B: plan + AgentEvent
-    A->>M: 经主备/预算网关生成三个 path code blocks
-    M-->>A: HTML/CSS/JS
-    A->>A: 解析、合并、Ray 质量门、必要时定向修复
-    A->>D: 保存 Version + Run + Events + Message
-    A-->>B: file + review + complete
+    B->>R: POST projectId + prompt
+    R->>R: 解析游客/ChatGPT 身份
+    R->>D: 检查 owner/额度、获取 generation_id、创建 Run
+    R-->>B: runId
+    loop requirements → architecture → HTML → CSS → JS → quality/repair → finalize
+        B->>S: POST runId + projectId
+        S->>D: 获取 active_step，读取 current_stage 和 Artifacts
+        S->>M: 当前 Agent 的一个真实 SSE 请求
+        M-->>S: content delta + usage
+        S-->>B: progress NDJSON
+        S->>D: 保存 Attempt + Artifact + Event，推进 stage
+        S-->>B: step_complete
+    end
+    S->>D: Ray 通过后保存 Version + Message + Run 终态
+    S-->>B: complete
     B->>B: 更新 React 状态
     B->>I: 注入组合后的 srcDoc
     I-->>B: ready/error/unhandledrejection
 
-    Note over B,A: NDJSON 断开时，浏览器 GET 项目并轮询；generating 项目不会重复 POST
+    Note over B,S: NDJSON 断开时，浏览器读取同一 Run 并从未完成 stage 继续
 ```
 
 ## 3. 各层职责
@@ -54,11 +59,11 @@ sequenceDiagram
 | 交互组件 | `components/workbench.tsx` | 状态、流解析、按钮行为 |
 | API | `app/api/**/route.ts` | 校验请求、编排服务、返回响应 |
 | 身份 | `lib/session.ts`、`lib/identity.ts`、`app/chatgpt-auth.ts` | visitor Cookie、受信账号、迁移、owner |
-| 规划 | `lib/planner.ts` | 本地确定性 Iris SOP |
+| 状态机 | `app/api/runs/[id]/step/route.ts` | 阶段租约、恢复、工件交接和终态 |
 | 模型网关 | `lib/model-gateway.ts` | 主备、超时、取消、调用/Token/时间预算 |
-| AI 构建 | `lib/opencode.ts` | Alex Prompt、漏文件和 Ray 定向修复 |
-| 解析/质量/运行时 | `lib/parser.ts`、`lib/quality.ts`、`lib/runtime.ts` | 文件协议、9 项质量门、iframe 组装与启动桥 |
-| 数据 | `lib/db.ts`、`db/schema.ts` | 所有权、租约、快照、固定发布、审计、限流 |
+| AI 动作 | `lib/opencode.ts` | Iris/Bob/Alex/Ray Prompt、解析和修复 |
+| 解析/质量/运行时 | `lib/parser.ts`、`lib/quality.ts`、`lib/runtime.ts` | 文件协议、通用/类型质量门、iframe 组装与启动桥 |
+| 数据 | `lib/db.ts`、`db/schema.ts` | 所有权、双租约、Artifact/Attempt/Event、快照、发布和限流 |
 | 平台入口 | `worker/index.ts` | Worker fetch 与图片优化 |
 | 构建部署 | `vite.config.ts`、`.openai/hosting.json` | Worker、D1 和部署元数据 |
 
@@ -114,7 +119,7 @@ plugins: [
 
 ## 7. 数据真源
 
-- D1：项目、版本、消息、运行、Agent 事件和限流的真源；
+- D1：项目、版本、消息、Run、Stage、Artifact、ModelAttempt、AgentEvent 和限流的真源；
 - Sites 身份头：登录账号事实；HttpOnly visitor Cookie：未登录工作区事实；
 - React state：当前页面的临时视图；
 - iframe 内存：生成应用本次预览的临时状态；
@@ -127,7 +132,7 @@ plugins: [
 | 决策 | 收益 | 代价 |
 |---|---|---|
 | 三文件生成物 | 快、可导出、易隔离 | 不能生成完整后端 |
-| 确定性 Iris + 一次代码模型 | 保留计划工件，0 规划 Token，降低长连接风险 | 规划能力受规则边界限制 |
+| 每 Agent/文件独立模型阶段 | 真实分工、长输出、阶段检查点、断点恢复 | 调用次数和总耗时高于单次生成 |
 | 全量版本快照 | 恢复简单可靠 | 比差量存储占空间 |
 | NDJSON | 实现轻、浏览器原生可读 | 不支持双向通信 |
 | D1 直接 prepared statement | Worker 运行简单清楚 | 复杂查询时抽象较薄 |
@@ -139,9 +144,9 @@ plugins: [
 
 | 角色 | 真实工件 |
 |---|---|
-| Iris | `AgentPlan` 和 requirements AgentEvent |
-| Bob | architecture AgentEvent 和三文件约束 |
-| Alex | 三个文件、模型用量和 implementation 事件 |
-| Ray | `AppQualityReport`、修复次数、最终终态 |
+| Iris | requirements Artifact：功能、验收、风险、测试计划 |
+| Bob | architecture Artifact：状态、交互、文件职责、测试策略 |
+| Alex | 三个独立代码 Artifact、每次模型 Attempt 和 implementation Event |
+| Ray | quality Artifact、通用/类型检查、功能证据、修复工件和最终终态 |
 
 每轮运行用 `generation_id`/run ID 串联。终止后，旧写者不能继续新增事件、修改项目或创建 Version。这是 MetaGPT SOP 思想在当前 Worker 范围内的落地边界。

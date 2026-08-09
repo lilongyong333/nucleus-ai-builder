@@ -43,6 +43,13 @@
       "when": 1786240146116,
       "tag": "0005_fuzzy_phantom_reporter",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786290823244,
+      "tag": "0006_familiar_iron_monger",
+      "breakpoints": true
     }
   ]
 }

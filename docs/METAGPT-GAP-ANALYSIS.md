@@ -1,6 +1,6 @@
 # Nucleus 与 MetaGPT / Atoms 的差距分析
 
-审计日期：2026-08-09
+审计日期：2026-08-10
 
 ## 结论
 
@@ -8,9 +8,9 @@
 
 - **MetaGPT** 是通用 Python 多智能体开发框架；
 - **Atoms** 是建立在 MetaGPT/MGX 之上的商业产品；
-- **Nucleus** 是 6–8 小时笔试范围的可运行 Atoms Demo。
+- **Nucleus** 是笔试范围内持续迭代的可运行 AI 应用生成器，不是 Atoms 源码复刻。
 
-按完整商业产品能力比较，Nucleus 目前约覆盖 Atoms 的 **30%–40%**；按 MetaGPT 框架广度比较，约覆盖 **30%–35%**。但按本次笔试的五项评分维度，Nucleus 在第一轮 MetaGPT-inspired 优化后估计达到 **88–91/100**。
+按完整商业产品广度比较，Nucleus 目前仍约覆盖 Atoms 的 **30%–40%**；按 MetaGPT 通用框架广度比较约 **35%–40%**。正式可恢复链路显著提高了“需求→架构→实现→审查→修复→版本”这条开发主链的深度，但没有凭空补齐全栈容器、浏览器 Agent、支付、多人协作和商业基础设施。按本次笔试五项 rubric，它已具备高分作品的工程代理特征；具体分数必须以最新线上真实生成和评审为准。
 
 这里的分数是基于公开功能和题目 rubric 的工程估算，不是统计学上的候选人百分位。没有全部候选作品数据，不能诚实承诺“必然超过 90% 面试者”；可以把 90 分以上、无 P0 缺陷、线上主链路全通作为“前 10% 竞争力”的代理目标。
 
@@ -38,25 +38,25 @@ MetaGPT 的 Role 会：
 5. 把带 `cause_by`、`sent_from`、`send_to` 的 Message 发布回 Environment；
 6. 保存记忆并等待下一轮。
 
-Nucleus 原版本中 Iris 和 Alex 对应真实模型调用；Bob 主要展示计划中的设计方向；Ray 主要展示保存状态。因此“多智能体”更多是产品化叙事，不具备 MetaGPT 的通用消息订阅和动态调度。
+Nucleus 原版本中 Bob/Ray 主要是 UI 叙事。当前版本已经把固定 SOP 做成持久化状态机：Iris、Bob、Alex、Ray 分别进行真实模型调用，消费上游 Artifact，产生独立 Artifact/Attempt/Event，并按 `current_stage` 交接。它仍不是 MetaGPT 的通用消息订阅、动态角色注册或任意 Environment 调度框架。
 
 ### 2. Action 产生可审查工件
 
 MetaGPT 不只传自然语言，它把需求、PRD、系统设计、任务列表、代码、测试和运行结果做成独立工件。后续角色消费的是明确产物，而不是无限增长的一段聊天。
 
-Nucleus 已有 `AgentPlan`、三文件和 `ProjectVersion`，但缺少独立架构文档、任务依赖、测试报告和可追踪的 action metadata。
+Nucleus 当前已经有 requirements、architecture、HTML、CSS、JavaScript、quality 六类检查点，另有 ModelAttempt、AgentEvent 和 Version。仍缺少通用任务 DAG、仓库级测试文件、命令执行结果和跨分支合并工件。
 
 ### 3. QA 是闭环
 
 MetaGPT 的 QA 观察代码变化，编写测试、运行测试、分析错误并进入有限轮次的修复。它有 `test_round_allowed` 防止无限循环。
 
-Nucleus 原版本只做文件完整性和运行错误回传，没有保存结构化 QA 报告。第一轮优化因此优先补真实质量门。
+Nucleus 当前同时执行 9 项通用确定性门、应用类型专项门和 Ray 语义审查；阻断时最多两轮定向修复并重新审查。与 MetaGPT 的差距是它还不能为任意技术栈编写并执行真实测试套件，也没有云端浏览器自动验收每一个生成版本。
 
 ### 4. Environment、预算与恢复
 
 MetaGPT Team 通过 Environment 路由消息，通过 `n_round` 限制轮次，通过 investment/cost manager 限制预算，并支持序列化后恢复。
 
-Nucleus 有 D1 版本、匿名次数限流和模型环境配置，但没有请求级成本、token、最大修复轮次、可恢复后台任务和 Agent 消息路由。
+Nucleus 现有 Run 级调用/Token 硬预算、阶段级时间/主备预算、最多两轮修复、D1 检查点、双层租约和断点恢复。仍没有 MetaGPT 的通用消息路由、并行任务 DAG、动态投资分配和可插拔工具环境。
 
 ## 功能矩阵
 
@@ -179,6 +179,23 @@ Nucleus 有 D1 版本、匿名次数限流和模型环境配置，但没有请�
 - Iris 规划使用本地确定性 SOP；构建、补文件和 Ray 修复共享调用、Token 和时间预算，主备模型按可解释规则切换，最终模型链持久化；
 - Sign in with ChatGPT 建立稳定账号 owner，匿名项目可迁移，项目、版本、对话和成品链接跨设备保存；
 - 预览新增沙箱启动校验；浏览器长流断开时读取服务端状态并自动恢复，不会重复发起后台任务；
-- 30 个单测、4 个 Chromium E2E、GitHub CI 和生产登录/取消链路均已通过。
+- 该轮当时的 30 个单测、4 个 Chromium E2E、GitHub CI 和生产登录/取消链路均已通过；当前基线见文末能力校正与 `PROGRESS.md`。
 
 因此 MetaGPT 主要剩余差距已不是“有没有多个角色头像”，而是通用 Role/Action/Environment 调度、动态任务依赖、并行分支和更广的工具执行。与商业第一梯队相比，最大差距是生成应用独立后端、云端浏览器 Agent、元素级编辑和 Git 项目协作。完整对照和五级上限定义见 `UPPER-BOUND-BENCHMARK.md`。
+
+## 2026-08-10 当前能力校正
+
+| 能力 | 当前是否真实落地 | 证据边界 |
+|---|---|---|
+| 真实角色调用 | 是 | Iris、Bob、Alex、Ray 均独立调用模型，不只是头像动画 |
+| 结构化交接 | 是 | requirements → architecture → 三文件 → quality Artifact |
+| 断点恢复 | 是 | `current_stage`、Artifact upsert、项目/阶段双租约；刷新从同一 Run 继续 |
+| 预算 | 是 | Run 24 calls/180K Tokens；阶段 2 calls/40K/47s；达到硬上限终止 |
+| 审计 | 是 | 每次模型尝试记录状态、耗时、首字、字符、usage、错误和模型链 |
+| QA 闭环 | 部分但真实 | 通用门 + 应用类型门 + 模型审查 + 两轮修复；尚无生成物云端浏览器自动点击 |
+| 代码范围 | 受控 | 仅 HTML/CSS/JS 三文件，无任意依赖/后端执行 |
+| 动态调度 | 否 | 固定 SOP，不是通用 Role/Action/Environment |
+| 并行方案/分支 | 否 | 同项目单写优先一致性，尚无 Race Mode 和人工 merge gate |
+| 全栈产品工厂 | 否 | 平台本身有 D1/Auth/部署，生成应用没有独立数据库/Auth/API |
+
+所以面试中最准确的表达是：Nucleus 已经把 MetaGPT 的“角色、工件、有限 QA 循环、预算和恢复”工程思想落到一条受控前端应用生成链上；它不是完整 MetaGPT 框架，更不是 Atoms 商业产品的 1:1 复刻。

@@ -40,7 +40,7 @@
 ### 第 3 天：理解 API 和 D1
 
 - 阅读项目创建路由；
-- 画出 projects/versions/messages/runs/events/limits 六张表；
+- 画出 projects、versions、messages、runs、events、artifacts、model_attempts、limits 八张表；
 - 给项目增加一个可选 `description`（练习分支，不急着上线）；
 - 同步修改 schema、migration、类型和 API。
 

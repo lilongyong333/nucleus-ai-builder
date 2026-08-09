@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** 真实模型 SSE 与对话式工作台已经合并；32 个 Vitest、6 个 Chromium E2E、ESLint、TypeScript 和生产构建组成发布门。Sites production version 号与 Git commit 会在每次发布后写入 `docs/PROGRESS.md`，不要用旧文档中的某个历史 version 判断线上是否最新。
+> **当前验证基线：** 可恢复真实多 Agent 状态机已经完成本地发布门；34 个 Vitest、7 个 Chromium E2E、ESLint、TypeScript 和生产构建全部通过。Sites production version 号、Git commit 和线上真实生成证据会在正式发布后写入 `docs/PROGRESS.md`，不要用旧文档中的历史 version 判断线上是否最新。
 
 ## 先看结论
 
@@ -11,13 +11,14 @@ Nucleus 是一个 AI 网页应用生成器。用户输入一句需求后，系�
 1. 解析游客 Cookie 或 Sites 注入的 ChatGPT 登录身份；
 2. 创建归属于当前 owner 的项目和第一条对话；
 3. 获取同项目单写者租约并检查小时额度；
-4. Iris 用本地确定性 SOP 生成结构化产品计划，0 Token、0 模型调用；
-5. Alex 经主备模型网关生成 `index.html`、`styles.css`、`script.js`；
-6. Ray 做 9 项确定性检查，必要时最多一次定向修复；
-7. 供应商 SSE 分片经 NDJSON 发送真实 AgentEvent、模型进度、质量和完成结果；
-8. 将代码、Version、GenerationRun、AgentEvent 和消息保存到 Cloudflare D1；
-9. 在受限 iframe 中运行并回报 `ready/error/unhandledrejection`；
-10. 支持断流恢复、取消、连续消息队列、语音输入、运行控制台、恢复旧版本、固定版本发布和 ZIP 下载。
+4. Iris 调用真实模型生成需求、验收标准、风险和测试计划；
+5. Bob 调用真实模型生成状态模型、交互流、三文件职责和测试架构；
+6. Alex 分三个独立阶段生成 `index.html`、`styles.css`、`script.js`，每个文件立即写入检查点；
+7. Ray 结合 9 项通用检查、应用类型专项契约和真实模型代码审查，必要时最多两轮定向修复；
+8. 每个阶段的供应商 SSE 经 NDJSON 发送真实模型进度，并保存 Artifact、ModelAttempt 和 AgentEvent；
+9. 只有 Ray 通过才保存 Version；浏览器/网络中断时从 D1 的 `current_stage` 继续；
+10. 在受限 iframe 中运行并回报 `ready/error/unhandledrejection`；
+11. 支持取消、连续消息队列、语音输入、运行控制台、恢复旧版本、固定版本发布和 ZIP 下载。
 
 自定义域名：<https://www.llynb.cc>
 
@@ -57,7 +58,9 @@ nucleus/
 │  ├─ w/[id]/page.tsx                  工作台入口
 │  ├─ p/[slug]/page.tsx                已发布应用页面
 │  └─ api/
-│     ├─ generate/route.ts              AI 生成流接口
+│     ├─ runs/route.ts                  显式创建可恢复 Run
+│     ├─ runs/[id]/step/route.ts        每次执行一个 Agent 阶段
+│     ├─ generate/route.ts              旧单请求兼容接口
 │     ├─ session/route.ts               当前登录/游客身份
 │     └─ projects/...                   项目、恢复、发布接口
 ├─ components/
@@ -66,13 +69,13 @@ nucleus/
 │  └─ published-preview.tsx            公开页预览
 ├─ lib/
 │  ├─ identity.ts / session.ts          登录身份、游客 Cookie、项目迁移
-│  ├─ planner.ts                        确定性 Iris SOP
-│  ├─ model-gateway.ts                  主备、超时、取消与共享预算
-│  ├─ opencode.ts                       Alex 构建与 Ray 定向修复
+│  ├─ planner.ts                        旧接口的确定性计划兼容层
+│  ├─ model-gateway.ts                  SSE、主备、超时、取消与两层预算
+│  ├─ opencode.ts                       Iris/Bob/Alex/Ray 的模型动作
 │  ├─ parser.ts                        模型输出解析
-│  ├─ quality.ts                       Acorn + 9 项 Ray 质量门
+│  ├─ quality.ts                       Acorn + 通用/应用类型质量门
 │  ├─ runtime.ts                       iframe 组装、storage shim、启动/错误桥
-│  ├─ db.ts                            D1 所有权、租约、版本、审计与限流
+│  ├─ db.ts                            D1 租约、阶段、工件、模型尝试、版本与限流
 │  └─ types.ts                         前后端共享类型
 ├─ db/schema.ts                        Drizzle 数据模型
 ├─ drizzle/                            SQL migration
@@ -98,12 +101,15 @@ pnpm dev
 ```dotenv
 OPENCODE_GO_API_KEY=你的新密钥
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=glm-5.2
-OPENCODE_GO_FALLBACK_MODEL=qwen3.5-plus
-OPENCODE_GO_REQUEST_TIMEOUT_MS=55000
-OPENCODE_GO_MAX_MODEL_CALLS=8
-OPENCODE_GO_MAX_TOTAL_TOKENS=50000
-OPENCODE_GO_MAX_DURATION_MS=240000
+OPENCODE_GO_MODEL=gpt-5.6-luna
+OPENCODE_GO_FALLBACK_MODEL=glm-5.2
+OPENCODE_GO_REQUEST_TIMEOUT_MS=26000
+OPENCODE_GO_FALLBACK_RESERVE_MS=18000
+OPENCODE_GO_MAX_MODEL_CALLS=24
+OPENCODE_GO_MAX_TOTAL_TOKENS=180000
+OPENCODE_GO_STEP_MAX_CALLS=2
+OPENCODE_GO_STEP_MAX_TOTAL_TOKENS=40000
+OPENCODE_GO_STEP_MAX_DURATION_MS=47000
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -128,4 +134,4 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 - 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A；
 - 首页四个固定成品链接均返回 200；
 - Sign in with ChatGPT 后，账号中心展示项目、版本、对话、工作台链接和公开成品链接；
-- `pnpm test` 为 30/30，`pnpm test:e2e` 为 4/4，CI 在 Linux + Chromium 通过。
+- 本地发布门为 `pnpm test` 34/34、`pnpm test:e2e` 7/7、TypeScript、ESLint、生产构建全部通过；正式部署后的 commit、Sites version、GitHub CI 和线上真实贪吃蛇运行数据见 `docs/PROGRESS.md`。

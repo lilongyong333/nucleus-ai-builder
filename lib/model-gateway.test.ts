@@ -81,19 +81,19 @@ describe("model gateway", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("propagates caller cancellation without contacting another model", async () => {
+  it("audits caller cancellation without contacting another model", async () => {
     const controller = new AbortController();
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init.signal?.addEventListener("abort", () => reject(init.signal instanceof AbortSignal ? init.signal.reason : new Error("aborted")), { once: true });
       controller.abort(new DOMException("cancelled", "AbortError"));
     }));
     const error = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary", "fallback"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), signal: controller.signal, fetcher }).catch((cause) => cause);
-    expect(error).toBeInstanceOf(DOMException);
-    expect(error.name).toBe("AbortError");
+    expect(error).toBeInstanceOf(ModelGatewayError);
+    expect(error).toMatchObject({ kind: "provider", attempts: [{ status: "cancelled" }] });
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("retries one empty completion before using the fallback", async () => {
+  it("reserves time by switching to the fallback after one empty completion", async () => {
     let calls = 0;
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
       calls += 1;
@@ -102,9 +102,9 @@ describe("model gateway", () => {
       return json({ choices: [{ message: { content: "usable" } }], usage: { total_tokens: 4 } });
     });
     const result = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary", "fallback"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), fetcher });
-    expect(calls).toBe(3);
-    expect(result.attempts.map((item) => item.status)).toEqual(["empty", "empty", "success"]);
-    expect(result.usage.totalTokens).toBe(10);
+    expect(calls).toBe(2);
+    expect(result.attempts.map((item) => item.status)).toEqual(["empty", "success"]);
+    expect(result.usage.totalTokens).toBe(7);
   });
 
   it("enforces the shared call budget before another provider request", async () => {

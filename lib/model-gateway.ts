@@ -2,12 +2,14 @@ import { addUsage, emptyUsage, normalizeUsage } from "./usage";
 import type { ModelUsage } from "./types";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-export type ModelAttemptStatus = "success" | "empty" | "http_error" | "timeout" | "network_error" | "budget_exceeded";
+export type ModelAttemptStatus = "success" | "empty" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
 
 export type ModelAttempt = {
   model: string;
   status: ModelAttemptStatus;
   durationMs: number;
+  firstTokenMs: number | null;
+  outputChars: number;
   statusCode: number | null;
   usage: ModelUsage;
   error: string | null;
@@ -49,7 +51,7 @@ export class ModelGatewayError extends Error {
 export function createModelBudget(options: { maxCalls: number; maxTotalTokens: number; maxDurationMs: number; now?: number }): ModelBudget {
   const now = options.now ?? Date.now();
   return {
-    maxCalls: clampInteger(options.maxCalls, 1, 20),
+    maxCalls: clampInteger(options.maxCalls, 1, 40),
     maxTotalTokens: clampInteger(options.maxTotalTokens, 1_000, 200_000),
     deadlineAt: now + clampInteger(options.maxDurationMs, 5_000, 290_000),
     calls: 0,
@@ -65,6 +67,8 @@ export async function requestChat(input: {
   messages: ChatMessage[];
   maxTokens: number;
   requestTimeoutMs: number;
+  fallbackReserveMs?: number;
+  emptyRetriesPerModel?: number;
   budget: ModelBudget;
   signal?: AbortSignal;
   fetcher?: FetchLike;
@@ -80,16 +84,25 @@ export async function requestChat(input: {
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
     const model = models[modelIndex];
-    for (let emptyAttempt = 0; emptyAttempt < 2; emptyAttempt++) {
+    const maxAttemptsForModel = 1 + clampInteger(input.emptyRetriesPerModel ?? 0, 0, 1);
+    for (let emptyAttempt = 0; emptyAttempt < maxAttemptsForModel; emptyAttempt++) {
       reserveCall(input.budget, model, attempts);
       input.signal?.throwIfAborted();
       const attemptStartedAt = Date.now();
       const remainingMs = input.budget.deadlineAt - attemptStartedAt;
       if (remainingMs <= 0) throw new ModelGatewayError("The generation time budget is exhausted", attempts, "budget");
       const timeoutController = new AbortController();
-      const timeoutMs = Math.max(1, Math.min(input.requestTimeoutMs, remainingMs));
+      const reserveForFallback = modelIndex < models.length - 1 ? Math.min(input.fallbackReserveMs ?? 16_000, Math.max(0, remainingMs - 1_000)) : 0;
+      const timeoutMs = Math.max(1, Math.min(input.requestTimeoutMs, remainingMs - reserveForFallback));
       const timer = setTimeout(() => timeoutController.abort(new DOMException("Model request timed out", "TimeoutError")), timeoutMs);
       const signal = input.signal ? AbortSignal.any([input.signal, timeoutController.signal]) : timeoutController.signal;
+      let firstTokenMs: number | null = null;
+      let outputChars = 0;
+      const reportDelta = (update: ModelStreamUpdate) => {
+        if (firstTokenMs === null && update.delta.length > 0) firstTokenMs = Date.now() - attemptStartedAt;
+        outputChars = update.totalChars;
+        input.onDelta?.(update);
+      };
       const messages = emptyAttempt === 0
         ? input.messages
         : [...input.messages, { role: "user" as const, content: "The previous completion was empty. Output the requested final answer immediately, with no reasoning preface." }];
@@ -104,19 +117,19 @@ export async function requestChat(input: {
         if (!response.ok) {
           const detail = (await response.text()).slice(0, 180);
           lastError = `Model ${model} failed (${response.status}): ${detail}`;
-          attempts.push(attempt(model, "http_error", attemptStartedAt, response.status, emptyUsage(), detail));
+          attempts.push(attempt(model, "http_error", attemptStartedAt, firstTokenMs, outputChars, response.status, emptyUsage(), detail));
           if (response.status === 401 || response.status === 429 || modelIndex === models.length - 1) {
             throw new ModelGatewayError(lastError, attempts, "provider");
           }
           break;
         }
 
-        const data = await readChatResponse(response, model, input.onDelta);
+        const data = await readChatResponse(response, model, reportDelta);
         const usage = normalizeUsage(data.usage);
         chatUsage = addUsage(chatUsage, usage);
         input.budget.usage = addUsage(input.budget.usage, usage);
         const content = usableContent({ content: data.content, reasoning_content: data.reasoningContent });
-        attempts.push(attempt(model, content ? "success" : "empty", attemptStartedAt, response.status, usage, content ? null : "Empty model response"));
+        attempts.push(attempt(model, content ? "success" : "empty", attemptStartedAt, firstTokenMs, outputChars, response.status, usage, content ? null : "Empty model response"));
         if (input.budget.usage.totalTokens > input.budget.maxTotalTokens) {
           attempts[attempts.length - 1] = { ...attempts[attempts.length - 1], status: "budget_exceeded", error: "Token budget exhausted" };
           throw new ModelGatewayError(`Model usage exceeded the ${input.budget.maxTotalTokens} token budget`, attempts, "budget");
@@ -125,11 +138,15 @@ export async function requestChat(input: {
         lastError = `Model ${model} returned empty content`;
       } catch (error) {
         if (error instanceof ModelGatewayError) throw error;
-        if (input.signal?.aborted) throw error;
+        if (input.signal?.aborted) {
+          const detail = error instanceof Error ? error.message : "Model request cancelled";
+          attempts.push(attempt(model, "cancelled", attemptStartedAt, firstTokenMs, outputChars, null, emptyUsage(), detail));
+          throw new ModelGatewayError("The model request was cancelled", attempts, "provider");
+        }
         const timedOut = timeoutController.signal.aborted;
         const detail = error instanceof Error ? error.message : "Network request failed";
         lastError = timedOut ? `Model ${model} timed out after ${timeoutMs}ms` : `Model ${model} network request failed: ${detail}`;
-        attempts.push(attempt(model, timedOut ? "timeout" : "network_error", attemptStartedAt, null, emptyUsage(), detail));
+        attempts.push(attempt(model, timedOut ? "timeout" : "network_error", attemptStartedAt, firstTokenMs, outputChars, null, emptyUsage(), detail));
         if (modelIndex === models.length - 1) throw new ModelGatewayError(lastError, attempts, "provider");
         break;
       } finally {
@@ -201,8 +218,8 @@ function usableContent(message?: { content?: string; reasoning_content?: string 
   return reasoning.includes("```") || reasoning.includes("<summary>") || /^\{[\s\S]*\}$/.test(reasoning) ? reasoning : "";
 }
 
-function attempt(model: string, status: ModelAttemptStatus, startedAt: number, statusCode: number | null, usage: ModelUsage, error: string | null): ModelAttempt {
-  return { model, status, durationMs: Date.now() - startedAt, statusCode, usage, error };
+function attempt(model: string, status: ModelAttemptStatus, startedAt: number, firstTokenMs: number | null, outputChars: number, statusCode: number | null, usage: ModelUsage, error: string | null): ModelAttempt {
+  return { model, status, durationMs: Date.now() - startedAt, firstTokenMs, outputChars, statusCode, usage, error };
 }
 
 function clampInteger(value: number, min: number, max: number) {

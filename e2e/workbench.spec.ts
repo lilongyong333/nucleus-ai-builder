@@ -48,6 +48,9 @@ function project(versionNumber = 1, quality = firstQuality): Project {
       repairCount: 0,
       versionId,
       error: null,
+      currentStage: "completed",
+      artifacts: [],
+      attempts: [],
       events: [{
         id: `event-${versionNumber}`,
         runId: `run-${versionNumber}`,
@@ -68,6 +71,15 @@ function project(versionNumber = 1, quality = firstQuality): Project {
       { id: "message-user", projectId: "e2e-project", role: "user", content: "制作一个面试计划板", createdAt: "2026-08-09T00:00:00.000Z" },
       { id: "message-assistant", projectId: "e2e-project", role: "assistant", content: `版本 ${versionNumber} 已生成`, createdAt: "2026-08-09T00:01:00.000Z" },
     ],
+  };
+}
+
+function runningProject(base: Project, runId: string, prompt: string): Project {
+  return {
+    ...base,
+    status: "generating",
+    runs: [{ ...base.runs[0], id: runId, prompt, status: "running", completedAt: null, durationMs: null, versionId: null, currentStage: "requirements", events: [], artifacts: [], attempts: [] }, ...base.runs],
+    messages: [...base.messages, { id: `message-${runId}`, projectId: base.id, role: "user", content: prompt, createdAt: "2026-08-09T00:02:00.000Z" }],
   };
 }
 
@@ -92,7 +104,7 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
 
   await expect(page).toHaveURL(/\/w\/e2e-project$/);
   await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
-  await expect(page.locator(".runtime-status.passed")).toContainText("启动校验通过");
+  await expect(page.locator(".runtime-status.passed")).toContainText("已保存版本启动通过");
   await expect(page.locator(".conversation-feed")).toContainText("制作一个面试计划板");
   await expect(page.locator(".conversation-quality > strong")).toContainText("92");
   await expect(page.locator(".run-audit-card")).toContainText("200");
@@ -111,8 +123,10 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
 test("renders streamed agent review and the completed version", async ({ page }) => {
   const initialProject = project();
   const completedProject = project(2, finalQuality);
+  const activeProject = runningProject(initialProject, "run-update", "增加任务优先级");
   await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
-  await page.route("**/api/generate", (route) => route.fulfill({
+  await page.route("**/api/runs", (route) => route.fulfill({ status: 201, json: { runId: "run-update", project: activeProject } }));
+  await page.route("**/api/runs/run-update/step", (route) => route.fulfill({
     status: 200,
     contentType: "application/x-ndjson; charset=utf-8",
     body: [
@@ -174,23 +188,21 @@ test("recovers a server-side generation after the browser stream disconnects", a
     messages: completedProject.messages.slice(0, 1),
   };
   let reads = 0;
-  let generationPosts = 0;
+  let stepPosts = 0;
   await page.route("**/api/projects/e2e-project", (route) => {
     reads += 1;
     return route.fulfill({ json: { project: reads === 1 ? inFlightProject : completedProject } });
   });
-  await page.route("**/api/generate", (route) => {
-    generationPosts += 1;
-    return route.fulfill({ status: 409, json: { error: "already running" } });
+  await page.route("**/api/runs/run-1/step", (route) => {
+    stepPosts += 1;
+    return route.fulfill({ status: 200, contentType: "application/x-ndjson; charset=utf-8", body: `${JSON.stringify({ type: "complete", project: completedProject })}\n` });
   });
 
   await page.goto("/w/e2e-project");
-  await expect(page.locator(".agent-step-card")).toContainText("需求分析完成");
   await expect(page.locator(".project-title small")).toHaveText("已保存", { timeout: 8000 });
-  await page.locator(".agent-step-card summary").click();
   await expect(page.locator(".agent-step-card")).toContainText("结果已恢复");
   await expect(page.getByRole("button", { name: /版本 v1/ })).toBeVisible();
-  expect(generationPosts).toBe(0);
+  expect(stepPosts).toBe(1);
 });
 
 test("shows a clear access error instead of an endless loading state", async ({ page }) => {
@@ -208,9 +220,15 @@ test("queues a second message with Return while the current generation is runnin
   const secondCompleted = project(3, finalQuality);
   let generationPosts = 0;
   await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
-  await page.route("**/api/generate", async (route) => {
+  await page.route("**/api/runs", async (route) => {
     generationPosts += 1;
     const currentCall = generationPosts;
+    const requestBody = route.request().postDataJSON() as { prompt: string };
+    const active = runningProject(initialProject, `queue-run-${currentCall}`, requestBody.prompt);
+    await route.fulfill({ status: 201, json: { runId: `queue-run-${currentCall}`, project: active } });
+  });
+  await page.route("**/api/runs/queue-run-*/step", async (route) => {
+    const currentCall = route.request().url().includes("queue-run-1") ? 1 : 2;
     await new Promise((resolve) => setTimeout(resolve, currentCall === 1 ? 700 : 120));
     const completed = currentCall === 1 ? firstCompleted : secondCompleted;
     await route.fulfill({
@@ -234,4 +252,18 @@ test("queues a second message with Return while the current generation is runnin
   await expect.poll(() => generationPosts, { timeout: 5000 }).toBe(2);
   await expect(page.getByRole("button", { name: /版本 v3/ })).toBeVisible({ timeout: 5000 });
   await expect(page.locator(".message-queue")).toHaveCount(0);
+});
+
+test("keeps a v0 draft honest and does not auto-spend a generation", async ({ page }) => {
+  const ready = project();
+  const draft: Project = { ...ready, status: "draft", plan: null, currentVersionId: null, publishedVersionId: null, slug: null, versions: [], runs: [], messages: ready.messages.slice(0, 1) };
+  let runPosts = 0;
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: draft } }));
+  await page.route("**/api/runs", (route) => { runPosts += 1; return route.fulfill({ status: 500, json: { error: "unexpected auto-run" } }); });
+  await page.goto("/w/e2e-project");
+  await expect(page.getByText("VERSION 0 · NO GENERATED APP")).toBeVisible();
+  await expect(page.getByText("这里不会再展示与需求无关的预制 Demo。", { exact: false })).toBeVisible();
+  await expect(page.getByTitle("面试计划板 预览")).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(runPosts).toBe(0);
 });

@@ -284,8 +284,8 @@ glm-5.2 -> qwen3.5-plus
 当前交付在本地和 GitHub CI 同时通过：
 
 ```powershell
-pnpm test             # 32/32
-pnpm test:e2e         # 6/6 Chromium（含连续消息队列与无权限错误页）
+pnpm test             # 当前基线 34/34
+pnpm test:e2e         # 当前基线 7/7 Chromium
 pnpm lint
 pnpm exec tsc --noEmit
 pnpm build
@@ -316,3 +316,30 @@ pnpm build
 ```
 
 如果从零学习，不需要一次实现全部。按照本章提交顺序逐段运行和比较，就是最接近真实企业项目的学习方式。
+
+## 16. 第十三阶段：从“单次生成”升级为可恢复软件团队
+
+用户用“贪吃蛇”验证时，旧架构同时暴露两个不能靠 UI 修饰的问题：
+
+1. 新 draft 直接显示 starter Todo，失败也像已有成果；
+2. 整轮生成依赖一个 60 秒请求，提高 `max_tokens` 反而更容易被平台终止。
+
+正式修复先完成 P0：v0 显示真实空状态、必须显式开始、没有 Version 就不能发布/下载、只有同一 Run 的完整三文件 Artifact 才能显示候选预览。
+
+再完成 P1：
+
+```text
+POST /api/runs
+  -> requirements (Iris model)
+  -> architecture (Bob model)
+  -> index.html (Alex model)
+  -> styles.css (Alex model)
+  -> script.js (Alex model)
+  -> quality (Ray model + deterministic checks)
+  -> repair -> quality (最多两轮)
+  -> finalize -> Version
+```
+
+每个箭头之间都写入 D1 的 `current_stage`、Artifact、ModelAttempt 和 AgentEvent；浏览器断开时只重跑没有完成的当前阶段。整轮额度提高到 24 次调用/180K Tokens，单阶段仍控制为 2 次/40K/47 秒。当前探针选择 `gpt-5.6-luna → glm-5.2`。
+
+这轮本地发布门为 34/34 Vitest、7/7 Playwright、TypeScript、ESLint、production build 和 `git diff --check` 全通过。生产 commit、Sites version 和真实贪吃蛇验收以 `docs/PROGRESS.md` 最后一节为准。

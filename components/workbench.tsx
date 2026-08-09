@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowLeft, Bot, Boxes, Check, ChevronDown, CircleAlert, Clock3, Code2, Copy, Download, ExternalLink, FileCode2, Globe2, History, Laptop, ListChecks, LoaderCircle, Maximize2, MessageSquareText, Mic, MicOff, Monitor, PanelLeftClose, Play, Plus, RefreshCcw, RotateCcw, Send, Share2, ShieldCheck, Smartphone, Sparkles, Square, SquareTerminal, Trash2, UserRound, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
-import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, Project, ProjectMessage } from "@/lib/types";
+import type { AgentEvent, AgentPlan, AppQualityReport, GeneratedFiles, GenerationArtifactKind, Project, ProjectMessage } from "@/lib/types";
 
 type TimelineItem = { id: string; agent: string; title: string; detail: string; state: "working" | "done" | "error"; time: string };
 type LiveStreamState = { agent: string; phase: string; label: string; text: string; totalChars: number; done: boolean; model: string };
@@ -27,7 +27,6 @@ const agentTone: Record<string, string> = { Iris: "iris", Bob: "bob", Alex: "ale
 
 export function Workbench({ projectId }: { projectId: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const startedRef = useRef(false);
   const generatingRef = useRef(false);
   const generationStartedAtRef = useRef<number | null>(null);
   const generationControllerRef = useRef<AbortController | null>(null);
@@ -76,6 +75,9 @@ export function Workbench({ projectId }: { projectId: string }) {
       setLivePlan(event.plan);
     } else if (event.type === "file") {
       setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Alex", title: `写入 ${event.path}`, detail: `${Math.max(1, Math.round(event.size / 1000))} KB · 已完成`, state: "done", time: nowTime() }]);
+    } else if (event.type === "artifact") {
+      // The durable artifact is refreshed from the project API after the step.
+      // Keeping it out of component state avoids duplicating large code files.
     } else if (event.type === "review") {
       setLiveQuality(event.report);
     } else if (event.type === "complete") {
@@ -90,11 +92,70 @@ export function Workbench({ projectId }: { projectId: string }) {
       setActiveTab("preview");
       setNotice(`v${event.project.versions[0]?.versionNumber ?? 1} 已保存`);
     } else if (event.type === "error") {
-      throw new Error(event.message);
+      setNotice(event.retryable ? `${event.message} 正在自动重试…` : event.message);
     }
   }, []);
 
-  const runGenerate = useCallback(async (prompt: string) => {
+  const driveRun = useCallback(async (runId: string, generationController: AbortController) => {
+    for (let stepNumber = 0; stepNumber < 24; stepNumber += 1) {
+      const response = await fetch(`/api/runs/${runId}/step`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }), signal: generationController.signal });
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => ({})) as { error?: string; retryable?: boolean; project?: Project };
+        if (response.status === 409 && (data.retryable || data.project?.status === "generating")) {
+          await new Promise((resolve) => window.setTimeout(resolve, 850));
+          continue;
+        }
+        throw new Error(data.error || "执行 Agent 阶段失败");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let retryableError = "";
+      let terminalError = "";
+      let completed = false;
+      const consume = (line: string) => {
+        if (!line.trim()) return;
+        const event = JSON.parse(line) as AgentEvent;
+        handleEvent(event);
+        if (event.type === "error") {
+          if (event.retryable) retryableError = event.message;
+          else terminalError = event.message;
+        }
+        if (event.type === "complete") completed = true;
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        lines.forEach(consume);
+        if (done) break;
+      }
+      if (buffer.trim()) consume(buffer);
+      if (completed) return;
+      const projectResponse = await fetch(`/api/projects/${projectId}`, { cache: "no-store", signal: generationController.signal });
+      const data = await projectResponse.json() as { project?: Project; error?: string };
+      if (projectResponse.ok && data.project) {
+        setProject(data.project);
+        setTimeline(timelineFromProject(data.project));
+        setLivePlan(data.project.plan ?? parseRunArtifact<AgentPlan>(data.project, "requirements"));
+        setLiveQuality(currentQuality(data.project));
+        if (data.project.status === "ready") return;
+        if (data.project.status === "error") throw new Error(data.project.runs[0]?.error || terminalError || "生成失败");
+        if (data.project.status === "draft") return;
+      }
+      if (terminalError) throw new Error(terminalError);
+      if (retryableError) {
+        await new Promise((resolve) => window.setTimeout(resolve, 650));
+        continue;
+      }
+      setLiveStream(null);
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+    }
+    throw new Error("Agent 工作流超过最大阶段数，已安全停止");
+  }, [handleEvent, projectId]);
+
+  const runGenerate = useCallback(async (prompt: string, existingRunId?: string) => {
     const clean = prompt.trim();
     if (clean.length < 3 || generatingRef.current) return;
     generatingRef.current = true;
@@ -111,26 +172,26 @@ export function Workbench({ projectId }: { projectId: string }) {
     const generationController = new AbortController();
     generationControllerRef.current = generationController;
     try {
-      const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, prompt: clean }), signal: generationController.signal });
-      if (!response.ok || !response.body) {
-        const data = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(data.error || "生成请求失败");
+      let runId = existingRunId;
+      if (!runId) {
+        const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, prompt: clean }), signal: generationController.signal });
+        const data = await response.json().catch(() => ({})) as { error?: string; runId?: string; project?: Project };
+        if (!response.ok || !data.runId) throw new Error(data.error || "启动生成任务失败");
+        runId = data.runId;
+        if (data.project) setProject(data.project);
       }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          handleEvent(JSON.parse(line) as AgentEvent);
-        }
-        if (done) break;
+      await driveRun(runId, generationController);
+      if (existingRunId) {
+        setTimeline((items) => [...items, {
+          id: crypto.randomUUID(),
+          agent: "Ray",
+          title: "结果已恢复",
+          detail: "已从云端检查点继续执行，并同步最终版本与审计记录。",
+          state: "done",
+          time: nowTime(),
+        }]);
+        setNotice("断点任务已恢复并完成");
       }
-      if (buffer.trim()) handleEvent(JSON.parse(buffer) as AgentEvent);
     } catch (cause) {
       if (generationController.signal.aborted) {
         setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "已取消生成", detail: "当前任务已停止，已保存版本不会受到影响。", state: "done", time: nowTime() }]);
@@ -150,8 +211,7 @@ export function Workbench({ projectId }: { projectId: string }) {
           setTimeline(timelineFromProject(recoveredProject));
           if (recoveredProject.status === "generating") {
             setLiveStream((current) => current ?? reconnectStream(recoveredProject));
-            setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "连接恢复中", detail: "已恢复云端执行记录，完成后会自动同步结果。", state: "working", time: nowTime() }]);
-            setNotice("服务端仍在生成，正在自动恢复");
+            setNotice("当前阶段连接已中断，已保存工件；重新打开页面会从断点继续");
             return;
           }
           if (recoveredProject.status === "ready" && recoveredProject.versions.length > 0) {
@@ -161,7 +221,6 @@ export function Workbench({ projectId }: { projectId: string }) {
           }
         }
       } catch { /* keep the original transport error */ }
-      setTimeline((items) => [...items, { id: crypto.randomUUID(), agent: "Ray", title: "生成中断", detail: message, state: "error", time: nowTime() }]);
       setNotice(message);
     } finally {
       if (generationControllerRef.current === generationController) generationControllerRef.current = null;
@@ -169,7 +228,7 @@ export function Workbench({ projectId }: { projectId: string }) {
       generatingRef.current = false;
       setGenerating(false);
     }
-  }, [handleEvent, projectId]);
+  }, [driveRun, projectId]);
 
   const cancelCurrentGeneration = useCallback(async () => {
     setQueuePaused(true);
@@ -248,10 +307,8 @@ export function Workbench({ projectId }: { projectId: string }) {
       }
       return data.project as Project;
     }).then((value) => {
-      if (value.status === "draft" && value.versions.length === 0 && !startedRef.current) {
-        startedRef.current = true;
-        void runGenerate(value.prompt);
-      }
+      const activeRun = value.runs.find((run) => run.status === "running");
+      if (value.status === "generating" && activeRun) void runGenerate(activeRun.prompt, activeRun.id);
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : "读取项目失败";
       setLoadError(message);
@@ -326,11 +383,17 @@ export function Workbench({ projectId }: { projectId: string }) {
         if (!response.ok || !data.project || stopped) throw new Error("项目状态读取失败");
         setProject(data.project);
         if (data.project.status !== "generating") setActivePrompt(null);
-        setLivePlan(data.project.plan);
+        setLivePlan(data.project.plan ?? parseRunArtifact<AgentPlan>(data.project, "requirements"));
         setLiveQuality(currentQuality(data.project));
         setTimeline(timelineFromProject(data.project));
         if (data.project.status === "generating") {
           setLiveStream((current) => current ?? reconnectStream(data.project!));
+          const activeRun = data.project.runs.find((run) => run.status === "running");
+          if (activeRun && !generatingRef.current) {
+            stopped = true;
+            void runGenerate(activeRun.prompt, activeRun.id);
+            return;
+          }
           timer = window.setTimeout(() => void poll(), 1800);
           return;
         }
@@ -350,9 +413,14 @@ export function Workbench({ projectId }: { projectId: string }) {
     };
     timer = window.setTimeout(() => void poll(), 1200);
     return () => { stopped = true; window.clearTimeout(timer); };
-  }, [generating, project?.status, projectId]);
+  }, [generating, project?.status, projectId, runGenerate]);
 
-  const srcDoc = useMemo(() => project ? composePreview(project.files) : "", [project]);
+  const previewFiles = useMemo(() => {
+    if (!project) return null;
+    if (project.currentVersionId) return project.files;
+    return completeRunFiles(project.runs[0]);
+  }, [project]);
+  const srcDoc = useMemo(() => previewFiles ? composePreview(previewFiles) : "", [previewFiles]);
 
   function reloadPreview() {
     setPreviewError("");
@@ -380,7 +448,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   }
 
   async function download() {
-    if (!project) return;
+    if (!project?.currentVersionId) return setNotice("当前还没有通过质量门的可下载版本");
     const JSZip = (await import("jszip")).default;
     const zip = new JSZip();
     Object.entries(project.files).forEach(([path, content]) => zip.file(path, content));
@@ -396,6 +464,12 @@ export function Workbench({ projectId }: { projectId: string }) {
   if (!project) return <main className="workbench-load-error"><span className="brand-mark"><CircleAlert size={22} /></span><p>PROJECT ACCESS</p><h1>无法打开这个项目</h1><span>{loadError || "项目不存在，或它属于另一个账号 / 匿名会话。"}</span><a href="/"><ArrowLeft size={15} /> 返回首页创建新应用</a></main>;
   const latestRun = project.runs[0];
   const busy = generating || project.status === "generating";
+  const hasSavedVersion = Boolean(project.currentVersionId);
+  const workingFiles = runFiles(project.runs[0]);
+  const codeFiles: Partial<GeneratedFiles> = hasSavedVersion ? project.files : workingFiles;
+  const codePaths = Object.keys(codeFiles) as Array<keyof GeneratedFiles>;
+  const artifactFileCount = latestRun?.artifacts.filter((artifact) => ["index.html", "styles.css", "script.js"].includes(artifact.kind)).length ?? 0;
+  const isCandidatePreview = !hasSavedVersion && Boolean(previewFiles);
   const displayTimeline = timeline.length > 0 ? timeline : timelineFromProject(project);
   const currentAgent = liveStream?.agent ?? displayTimeline.at(-1)?.agent ?? "Iris";
   const statusLabel = busy ? "生成中" : project.status === "error" ? "生成失败" : project.status === "ready" ? "已保存" : "草稿";
@@ -411,7 +485,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
       <header className="workbench-topbar">
         <div className="topbar-left"><a className="icon-button" href="/" aria-label="返回首页"><ArrowLeft size={18} /></a><a className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></a><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${busy ? "busy" : project.status === "error" ? "failed" : ""}`} /> <small>{statusLabel}</small></div></div>
-        <div className="topbar-actions"><a href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></a><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
+        <div className="topbar-actions"><a href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></a><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()} disabled={!hasSavedVersion}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()} disabled={!hasSavedVersion}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
       </header>
 
       <aside className="agent-panel">
@@ -452,7 +526,7 @@ export function Workbench({ projectId }: { projectId: string }) {
             <button type="button" className={quickPromptsOpen ? "active" : ""} onClick={() => setQuickPromptsOpen((open) => !open)} aria-label="添加快捷指令"><Plus size={17} /></button>
             <button type="button" className={isListening ? "listening" : ""} onClick={toggleVoiceInput} aria-label={isListening ? "停止语音输入" : "开始语音输入"}>{isListening ? <MicOff size={16} /> : <Mic size={16} />}</button>
             <span>{busy ? "Return 加入队列" : "Return 发送"}<small>Shift + Return 换行</small></span>
-            {busy ? <button type="button" className="composer-submit stop" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : project.status === "error" && requestText.trim().length < 3 ? <button type="button" className="composer-submit" onClick={() => void runGenerate(project.prompt)} aria-label="重试上次生成"><RefreshCcw size={14} /></button> : <button className="composer-submit" disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={15} /></button>}
+            {busy ? <button type="button" className="composer-submit stop" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : (project.status === "error" || project.status === "draft") && requestText.trim().length < 3 ? <button type="button" className="composer-submit" onClick={() => void runGenerate(project.prompt)} aria-label={project.status === "draft" ? "开始正式构建" : "重试上次生成"}>{project.status === "draft" ? <WandSparkles size={14} /> : <RefreshCcw size={14} />}</button> : <button className="composer-submit" disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={15} /></button>}
           </div>
         </form>
       </aside>
@@ -464,8 +538,8 @@ export function Workbench({ projectId }: { projectId: string }) {
           <div className="view-tabs"><button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}><Play size={14} />应用查看器</button><button className={activeTab === "code" ? "active" : ""} onClick={() => setActiveTab("code")}><Code2 size={14} />代码文件</button></div>
           <div className="canvas-actions">
             <button className={showConsole ? "active" : ""} onClick={() => { setActiveTab("preview"); setShowConsole((open) => !open); }} aria-label="切换控制台"><SquareTerminal size={15} /></button>
-            {activeTab === "preview" && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{previewState === "checking" ? "启动校验中" : previewState === "passed" ? "启动校验通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}
-            <button onClick={reloadPreview} aria-label="刷新"><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏"><Maximize2 size={15} /></button>
+            {activeTab === "preview" && previewFiles && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{previewState === "checking" ? "启动校验中" : previewState === "passed" ? isCandidatePreview ? "候选工件可启动" : "已保存版本启动通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}
+            <button onClick={reloadPreview} aria-label="刷新" disabled={!previewFiles}><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏" disabled={!previewFiles}><Maximize2 size={15} /></button>
           </div>
         </div>
 
@@ -473,9 +547,9 @@ export function Workbench({ projectId }: { projectId: string }) {
 
         {activeTab === "preview" ? <div className={`preview-stage ${device}`}>
           {busy && <section className="generation-stream-card" aria-live="polite"><header><span className={`agent-avatar small ${agentTone[currentAgent] ?? "iris"}`}>{currentAgent.slice(0, 1)}</span><div><small>LIVE GENERATION</small><strong>{liveStream?.label ?? displayTimeline.at(-1)?.title ?? "正在连接模型"}</strong></div><time>{elapsedSeconds}s</time></header><pre>{liveStream?.text || "等待模型返回第一个内容片段…"}<i /></pre><footer><span>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 个字符已实时接收` : "正在建立流式连接"}</span><b>{liveStream?.done ? "本阶段完成" : "实时输出中"}</b></footer></section>}
-          <div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div>
+          {previewFiles ? <div className={`preview-browser ${isCandidatePreview ? "candidate" : ""}`}><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div>{isCandidatePreview ? <b>候选工件 · 待 Ray 审查</b> : <Laptop size={14} />}</div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div> : <section className="empty-app-canvas"><span><Boxes size={24} /></span><p>VERSION 0 · NO GENERATED APP</p><h2>{busy ? "团队正在构建第一版应用" : project.status === "error" ? "上一轮没有形成可用版本" : "需求已保存，等待正式构建"}</h2><small>{busy ? `已持久化 ${artifactFileCount}/3 个代码文件；刷新或断线后可从当前阶段继续。` : "这里不会再展示与需求无关的预制 Demo。只有真实生成并通过 Ray 质量门的工件才会成为 v1。"}</small><div><b className={latestRun?.artifacts.some((item) => item.kind === "requirements") ? "done" : ""}>Iris 需求</b><b className={latestRun?.artifacts.some((item) => item.kind === "architecture") ? "done" : ""}>Bob 架构</b><b className={artifactFileCount === 3 ? "done" : ""}>Alex 代码 {artifactFileCount}/3</b><b className={latestRun?.artifacts.some((item) => item.kind === "quality") ? "done" : ""}>Ray 质量</b></div>{!busy && <button onClick={() => void runGenerate(project.prompt)}><WandSparkles size={15} /> {project.status === "error" ? "从头重试正式工作流" : "开始正式构建"}</button>}</section>}
           {showConsole && <section className="runtime-console"><header><span><SquareTerminal size={14} /> 运行控制台</span><div><button onClick={() => setConsoleEntries([])}>清空</button><button onClick={() => setShowConsole(false)} aria-label="关闭控制台"><X size={13} /></button></div></header><div>{consoleEntries.length === 0 ? <p className="console-empty">暂无日志。应用中的 console 输出和运行错误会实时显示在这里。</p> : consoleEntries.map((entry) => <p className={entry.level} key={entry.id}><time>{entry.time}</time><b>{entry.level.toUpperCase()}</b><span>{entry.message}</span></p>)}</div></section>}
-        </div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
+        </div> : codePaths.length > 0 ? <div className="code-workspace"><aside className="file-tree"><div><span>{hasSavedVersion ? "已保存版本" : "断点工件"}</span><small>{codePaths.length} files</small></div>{codePaths.map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round((codeFiles[path]?.length ?? 0) / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}{!hasSavedVersion && <small> · 尚未成为版本</small>}</span><button onClick={() => { void navigator.clipboard.writeText(codeFiles[activeFile] ?? ""); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{codeFiles[activeFile] ?? "请选择已经生成的文件"}</code></pre></section></div> : <section className="code-empty-state"><FileCode2 size={28} /><strong>还没有代码工件</strong><p>开始构建后，Alex 每完成一个文件就会在这里建立可恢复断点。</p></section>}
       </section>
 
       {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}{version.quality ? ` · Ray ${version.quality.score}/100` : ""}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}
@@ -511,10 +585,13 @@ function AgentActivityPanel({ busy, currentAgent, elapsedSeconds, timeline, live
   run: Project["runs"][number] | undefined;
 }) {
   const completedSteps = timeline.filter((item) => item.state === "done").length;
-  const agent = busy ? currentAgent : "Alex";
+  const failed = run?.status === "failed";
+  const cancelled = run?.status === "cancelled";
+  const agent = busy ? currentAgent : failed || cancelled ? "Ray" : "Alex";
   const role = ({ Iris: "产品规划", Bob: "架构师", Alex: "工程师", Ray: "质量审查" } as Record<string, string>)[agent] ?? "智能体";
-  return <article className={`agent-activity-turn ${busy ? "working" : "completed"}`}>
-    <header><span className={`agent-avatar small ${agentTone[agent] ?? "alex"}`}>{agent.slice(0, 1)}</span><div><strong>{agent}</strong><small>{role} · {busy ? "正在跟随你的要求" : "本轮工作已完成"}</small></div>{busy && <time>{elapsedSeconds}s</time>}</header>
+  const outcome = busy ? "正在跟随你的要求" : failed ? "本轮生成失败" : cancelled ? "本轮已取消" : "本轮工作已完成";
+  return <article className={`agent-activity-turn ${busy ? "working" : failed ? "failed" : "completed"}`}>
+    <header><span className={`agent-avatar small ${agentTone[agent] ?? "alex"}`}>{agent.slice(0, 1)}</span><div><strong>{agent}</strong><small>{role} · {outcome}</small></div>{busy && <time>{elapsedSeconds}s</time>}</header>
     <details className="agent-step-card" open={busy || undefined}>
       <summary><span>{busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{busy ? `已处理 ${completedSteps} 步，正在执行` : `已处理 ${Math.max(completedSteps, timeline.length)} 步`}</span><ChevronDown size={14} /></summary>
       <div className="agent-step-list">
@@ -524,14 +601,32 @@ function AgentActivityPanel({ busy, currentAgent, elapsedSeconds, timeline, live
     </details>
     {busy && <div className="inline-stream"><header><span>{liveStream?.label ?? timeline.at(-1)?.title ?? "正在连接模型"}</span><b>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 字符` : "连接中"}</b></header><pre>{liveStream?.text || "等待模型返回第一个内容片段…"}<i /></pre></div>}
     {plan && <details className="conversation-plan"><summary><span><WandSparkles size={13} /> 当前实现计划</span><ChevronDown size={13} /></summary><strong>{plan.summary}</strong><ul>{plan.features.slice(0, 4).map((feature) => <li key={feature}><Check size={11} />{feature}</li>)}</ul></details>}
+    {run?.artifacts.length ? <details className="conversation-plan artifact-ledger"><summary><span><Boxes size={13} /> 持久化工件 {run.artifacts.length}</span><ChevronDown size={13} /></summary><ul>{run.artifacts.map((artifact) => <li key={artifact.id}><Check size={11} /><span><b>{artifact.agent}</b> · {artifact.kind}</span><small>{Math.max(1, Math.round(artifact.content.length / 1000))} KB</small></li>)}</ul></details> : null}
     {quality && !busy && <div className={`conversation-quality ${quality.passed ? "passed" : "failed"}`}><span><ShieldCheck size={14} /> Ray 质量门</span><strong>{quality.score}<small>/100 · {quality.grade} 级</small></strong></div>}
-    {run && !busy && <details className={`run-audit-card conversation-audit ${run.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(run.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(run.durationMs)}</strong><small>总耗时</small></span><span><strong>{run.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{run.modelCalls}</strong><small>模型调用</small></span><span><strong>{run.events.length}</strong><small>事件</small></span></div><ol>{run.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol><footer><code>{run.id.slice(0, 8)}</code><span>{run.model}{run.repairCount ? ` · ${run.repairCount} 次修复` : ""}</span></footer></details>}
+    {run && !busy && <details className={`run-audit-card conversation-audit ${run.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(run.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(run.durationMs)}</strong><small>总耗时</small></span><span><strong>{run.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{run.modelCalls}</strong><small>模型调用</small></span><span><strong>{run.attempts.length}</strong><small>尝试记录</small></span></div><ol>{run.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol>{run.attempts.length > 0 && <div className="model-attempts"><strong>模型调用明细</strong>{run.attempts.map((attempt) => <div key={attempt.id}><span className={attempt.status}>{attempt.status}</span><b>{attempt.agent} · {attempt.model}</b><small>{formatDuration(attempt.durationMs)} · 首字 {attempt.firstTokenMs === null ? "—" : formatDuration(attempt.firstTokenMs)} · {attempt.outputChars.toLocaleString("zh-CN")} 字符 · {attempt.usage.totalTokens || 0} tokens</small></div>)}</div>}<footer><code>{run.id.slice(0, 8)}</code><span>{run.currentStage} · {run.model}{run.repairCount ? ` · ${run.repairCount} 次修复` : ""}</span></footer></details>}
   </article>;
 }
 
 function nowTime(withSeconds = false) { return new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" as const } : {}) }); }
 function slugify(value: string) { return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-").replace(/^-|-$/g, "") || "nucleus-app"; }
 function currentQuality(project: Project): AppQualityReport | null { return project.versions.find((version) => version.id === project.currentVersionId)?.quality ?? project.versions[0]?.quality ?? null; }
+function parseRunArtifact<T>(project: Project, kind: GenerationArtifactKind): T | null {
+  const content = project.runs[0]?.artifacts.find((artifact) => artifact.kind === kind)?.content;
+  if (!content) return null;
+  try { return JSON.parse(content) as T; } catch { return null; }
+}
+function runFiles(run: Project["runs"][number] | undefined): Partial<GeneratedFiles> {
+  const files: Partial<GeneratedFiles> = {};
+  for (const path of ["index.html", "styles.css", "script.js"] as const) {
+    const content = run?.artifacts.find((artifact) => artifact.kind === path)?.content;
+    if (content) files[path] = content;
+  }
+  return files;
+}
+function completeRunFiles(run: Project["runs"][number] | undefined): GeneratedFiles | null {
+  const files = runFiles(run);
+  return files["index.html"] && files["styles.css"] && files["script.js"] ? files as GeneratedFiles : null;
+}
 function formatDuration(value: number | null) { return value === null ? "—" : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`; }
 function runStatusLabel(status: Project["runs"][number]["status"]) { return ({ running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝" })[status]; }
 function timelineFromProject(project: Project): TimelineItem[] {

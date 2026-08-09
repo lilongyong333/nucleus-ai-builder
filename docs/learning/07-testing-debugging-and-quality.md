@@ -2,7 +2,7 @@
 
 ## 1. 五层验证
 
-只看页面“好像能打开”不够。本项目使用四层验证：
+只看页面“好像能打开”不够。本项目使用五层验证：
 
 | 层 | 命令/方法 | 主要发现什么 |
 |---|---|---|
@@ -28,21 +28,21 @@ pnpm test:e2e
 
 ## 3. 已有单元测试覆盖什么
 
-当前 30 个 Vitest 分布在 9 个文件：
+当前 34 个 Vitest 分布在 9 个文件：
 
 | 测试文件 | 覆盖重点 |
 |---|---|
 | `parser.test.ts` | path code fence、增量合并、返回文件集合 |
 | `runtime.test.ts` | 三文件组装、标签转义、缺文件拒绝、启动/错误桥 |
-| `quality.test.ts` | 完整应用、语法错误、假交互、危险 AST、文本误报 |
+| `quality.test.ts` | 完整应用、语法错误、假交互、危险 AST、文本误报、贪吃蛇专项契约 |
 | `session.test.ts` | visitor Cookie 复用、畸形替换、Set-Cookie 边界 |
 | `identity.test.ts` | Sites 受信身份、不完整头降为匿名 |
-| `model-gateway.test.ts` | 成功、503、超时、401、取消、空回复、调用/Token 预算 |
+| `model-gateway.test.ts` | SSE、成功、503、超时、401、可审计取消、空回复、调用/Token 预算 |
 | `planner.test.ts` | 结构化计划上限和迭代摘要 |
 | `usage.test.ts` | OpenAI usage 归一化与多调用累加 |
 | `generate-route.test.ts` | 路由失败事件、Run 指标和终态持久化 |
 
-4 个 Chromium E2E 覆盖：创建并打开工作台、流式 review/complete、登录账号详细链接、服务端生成断流恢复且零重复 POST。
+7 个 Chromium E2E 覆盖：创建并打开工作台、分步流式 review/complete、登录账号详细链接和真实跳转、服务端 Run 断流恢复、明确权限错误、生成中消息队列，以及 v0 草稿不自动花额度、不展示无关旧 Demo。
 
 ## 4. 为什么测试要有独立 Vite 配置
 
@@ -63,6 +63,8 @@ Vinext 主 `vite.config.ts` 会加载 Cloudflare 插件和 Worker 环境。Vites
 - [ ] 首页返回 200，主要文案和样式正常；
 - [ ] 创建项目返回项目 ID；
 - [ ] 首次生成持续收到 NDJSON 事件；
+- [ ] Iris、Bob、HTML、CSS、JS、Ray 工件按阶段写入；
+- [ ] 模型尝试能看到模型、状态、耗时、首字、字符数和 Tokens；
 - [ ] 最终收到 `complete`，状态 `ready`；
 - [ ] HTML/CSS/JS 都非空；
 - [ ] 预览中至少一个主交互可用；
@@ -237,7 +239,7 @@ HTML 和 JS 存在，但第一次没有 `styles.css`，无法形成有效 v1。
 
 ### 回归
 
-Playwright 首次返回 running，之后返回 ready，断言 UI 自动显示 v1 且 `/api/generate` POST 次数为 0。
+Playwright 首次返回 running，工作台自动调用同一个 Run 的 `/api/runs/:id/step`，之后返回 complete；断言 UI 显示 v1、恢复证据可见，且不会创建第二个 Run。
 
 ## 16. 实际问题 11：小模型探针和真实代码负载结论相反
 
@@ -288,6 +290,12 @@ Playwright 不再只检查 `href`，而是实际点击“打开工作台 → 返
 
 “HTTP Response 是流”不等于“模型也是流”；动画进度也不等于真实进度。必须同时验证供应商分片、边缘转发、浏览器消费和数据库终态。超时上限应来自真实托管日志，而不是框架里看起来可配置的 `maxDuration`。
 
+### 当前最终解法（取代“继续压缩一个大请求”）
+
+第九轮先把旧接口整轮压到 48 秒，这只是在单请求架构上的止血。2026-08-10 的正式方案进一步把整轮拆成可恢复阶段：`POST /api/runs` 只建 Run，`POST /api/runs/:id/step` 一次只执行 Iris、Bob、某个文件、Ray 或 finalize。每一步独立落盘 Artifact/Attempt/Event，前端在阶段之间重新同步 D1；断开时只重跑当前未完成阶段。
+
+因此现在可以提高整个 Run 的 Token 上限，同时继续把单个 Worker 请求控制在平台窗口内。这里解决的是架构问题，不是单纯把 `max_tokens` 从 8K 改成 80K。
+
 ## 19. 实际问题 14：生成时无法继续说话，计时还沿用上一轮
 
 ### 症状
@@ -313,21 +321,60 @@ Playwright 不再只检查 `href`，而是实际点击“打开工作台 → 返
 
 一个“像 Agent 的界面”不只看动画。它需要支持用户在长任务期间继续表达、把并发意图转成可预测队列、让停止真正停止、并把消息、执行证据和运行日志放在同一上下文里。计时必须绑定当前请求生命周期，不能从“最近一条历史 Run”推测。
 
-## 20. 排错顺序
+## 20. 实际问题 15：新需求却立刻出现旧 Todo Demo
+
+### 症状
+
+创建“贪吃蛇”项目后，右侧马上出现以前的任务清单；即使左侧生成失败，预览看起来仍像“有结果”。这会让评审怀疑产品使用固定模板伪装模型能力。
+
+### 根因
+
+新项目创建时把 `starterFiles` 放进 `projects.files_json`，工作台又把 draft 文件当成已生成版本展示；同时页面打开会自动启动首轮生成。产品状态、占位预览和真实 Version 没有严格分开。
+
+### 处理与回归
+
+- 没有 `currentVersionId` 时，不把 `projects.files_json` 当交付版本；
+- 只有同一 Run 已保存完整三文件 Artifact 时，才允许显示“待 Ray 审查候选”；
+- v0 显示明确空状态和显式“开始生成”按钮；
+- 下载、发布在没有 Version 时禁用；
+- E2E 打开 draft 后等待，断言没有 POST `/api/runs`，页面包含 `VERSION 0 · NO GENERATED APP`，且不存在 Todo 标题。
+
+## 21. 实际问题 16：高 Token 额度仍然动不动失败
+
+### 根因
+
+Token 上限只决定模型最多能输出多少，不会延长 Worker 单请求生命周期，也不会自动保存半成品。旧实现中任何一个长模型阶段都可能拖死整轮，重试还会从头重复花费。
+
+### 正式处理
+
+1. Run 总预算提高到 24 次调用、180K Tokens；
+2. 每阶段最多 2 次调用、40K Tokens、47 秒；
+3. 主模型 26 秒后让位，给备用模型保留 18 秒；
+4. HTML/CSS/JS 分别生成并立即保存；
+5. Run 每次按已审计用量扣减剩余调用和 Token；
+6. 超预算直接终止并保留工件，不做三次无意义重试；
+7. 浏览器断开产生 `cancelled` ModelAttempt，重新打开从检查点继续。
+
+### 学到什么
+
+“额度高”应该扩大整轮解决问题的空间；“单阶段有界”负责让系统可恢复。两者不冲突。可靠 Agent 产品的核心指标不是一次回复有多长，而是失败后能否解释、重试和继续。
+
+## 22. 排错顺序
 
 遇到失败时按层定位：
 
 1. 浏览器 Network：请求是否发出，状态码是什么；
-2. Response：普通 JSON 还是 NDJSON，最后一个事件是什么；
+2. Response：普通 JSON 还是 NDJSON，最后一个 `step_complete/error/complete` 是什么；
 3. 主页面 Console：React 或流解析是否报错；
 4. iframe 错误条：是生成应用自身错误吗；
 5. Worker 日志：模型/D1/绑定是否异常；
-6. 模型原始响应：协议、截断、漏文件还是空内容；
-7. D1：项目状态、版本记录是否一致。
+6. ModelAttempt：主备、首字、字符数、HTTP 状态和 Tokens；
+7. Artifact：当前阶段应有的工件是否已保存；
+8. D1：Project、Run、Version 和 current_stage 是否一致。
 
 不要一看到页面不对就立刻改 CSS。先确定故障在哪一层。
 
-## 21. 企业级下一步测试
+## 23. 企业级下一步测试
 
 - API contract test：验证所有状态码和错误结构；
 - 数据库 integration test：在临时 D1 上跑 CRUD/并发；

@@ -76,9 +76,20 @@ OPENCODE_GO_BASE_URL     regular/secret config
 OPENCODE_GO_MODEL        regular config
 OPENCODE_GO_FALLBACK_MODEL regular config
 OPENCODE_GO_REQUEST_TIMEOUT_MS regular config
+OPENCODE_GO_FALLBACK_RESERVE_MS regular config
 OPENCODE_GO_MAX_MODEL_CALLS regular config
 OPENCODE_GO_MAX_TOTAL_TOKENS regular config
 OPENCODE_GO_MAX_DURATION_MS regular config
+OPENCODE_GO_STEP_MAX_CALLS regular config
+OPENCODE_GO_STEP_MAX_TOTAL_TOKENS regular config
+OPENCODE_GO_STEP_MAX_DURATION_MS regular config
+OPENCODE_GO_IRIS_MAX_TOKENS regular config
+OPENCODE_GO_BOB_MAX_TOKENS regular config
+OPENCODE_GO_HTML_MAX_TOKENS regular config
+OPENCODE_GO_CSS_MAX_TOKENS regular config
+OPENCODE_GO_JS_MAX_TOKENS regular config
+OPENCODE_GO_RAY_MAX_TOKENS regular config
+OPENCODE_GO_REPAIR_MAX_TOKENS regular config
 ```
 
 真实 Key 作为 hosted secret 保存，不进入 Git commit、构建日志、浏览器 bundle 或文档。
@@ -116,7 +127,8 @@ OPENCODE_GO_MAX_DURATION_MS regular config
 GET  /                         -> 200
 GET  /api/projects             -> 200，说明 Worker 和 D1 可用
 POST /api/projects             -> 创建 draft
-POST /api/generate             -> 收到 NDJSON，最终 complete
+POST /api/runs                 -> 创建 runId，不在短请求中调用模型
+POST /api/runs/:id/step        -> 每次收到当前阶段 NDJSON，循环到 complete
 POST /api/projects/:id/publish -> 得到 slug
 GET  /p/:slug                  -> 200，预览可交互
 ```
@@ -153,7 +165,7 @@ Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.si
 | 项目 API 500 | `DB` binding、migration、D1 日志 |
 | 生成 429 | 用户限流和 `Retry-After` |
 | 生成立即 error | Key、模型 ID、套餐权限、端点协议 |
-| 生成长时间无 complete | audit 模型/阶段、浏览器是否进入恢复、服务端租约、单次/整轮预算 |
+| 生成长时间无 complete | current_stage、最新 Artifact/ModelAttempt、active_step、单阶段/整轮预算 |
 | 登录后看不到游客项目 | 身份头完整性、visitor Cookie、adoptVisitorProjects |
 | 另一个账号能读项目 | 所有私有 SQL 是否同时带 owner_id（应立即阻断发布） |
 | 公开页内容意外变化 | `published_version_id` 是否错误跟随 current version |

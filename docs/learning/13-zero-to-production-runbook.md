@@ -82,12 +82,23 @@ Copy-Item .env.example .env.local
 ```dotenv
 OPENCODE_GO_API_KEY=在这里填新密钥
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=glm-5.2
-OPENCODE_GO_FALLBACK_MODEL=qwen3.5-plus
-OPENCODE_GO_REQUEST_TIMEOUT_MS=55000
-OPENCODE_GO_MAX_MODEL_CALLS=8
-OPENCODE_GO_MAX_TOTAL_TOKENS=50000
-OPENCODE_GO_MAX_DURATION_MS=240000
+OPENCODE_GO_MODEL=gpt-5.6-luna
+OPENCODE_GO_FALLBACK_MODEL=glm-5.2
+OPENCODE_GO_REQUEST_TIMEOUT_MS=26000
+OPENCODE_GO_FALLBACK_RESERVE_MS=18000
+OPENCODE_GO_MAX_MODEL_CALLS=24
+OPENCODE_GO_MAX_TOTAL_TOKENS=180000
+OPENCODE_GO_MAX_DURATION_MS=48000
+OPENCODE_GO_STEP_MAX_CALLS=2
+OPENCODE_GO_STEP_MAX_TOTAL_TOKENS=40000
+OPENCODE_GO_STEP_MAX_DURATION_MS=47000
+OPENCODE_GO_IRIS_MAX_TOKENS=6000
+OPENCODE_GO_BOB_MAX_TOKENS=7000
+OPENCODE_GO_HTML_MAX_TOKENS=12000
+OPENCODE_GO_CSS_MAX_TOKENS=12000
+OPENCODE_GO_JS_MAX_TOKENS=12000
+OPENCODE_GO_RAY_MAX_TOKENS=8000
+OPENCODE_GO_REPAIR_MAX_TOKENS=16000
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -303,7 +314,8 @@ type GeneratedFiles = {
 - `lib/db.ts`；
 - `POST/GET /api/projects`；
 - `GET /api/projects/:id`；
-- `POST /api/generate`；
+- `POST /api/runs` 与 `POST /api/runs/:id/step`；
+- 旧 `/api/generate` 只作为兼容接口保留；
 - `versions` 全量快照；
 - `messages` 对话。
 
@@ -330,7 +342,8 @@ type GeneratedFiles = {
 - 真实交互；
 - 语义、响应式和可访问性；
 - 确定性评分；
-- 最多一次定向修复。
+- 通用检查、应用类型专项检查和 Ray 模型审查；
+- 最多两轮定向修复，每轮重跑全部质量门。
 
 完成标准：坏 JS 不能保存版本；假按钮应用不能得到通过；报告随 Version 持久化。
 
@@ -551,7 +564,8 @@ GET  /                             200
 GET  /api/session                  200
 GET  /api/projects                 200
 POST /api/projects                 201
-POST /api/generate                 NDJSON + terminal state
+POST /api/runs                     201 + runId
+POST /api/runs/:id/step            NDJSON + step_complete/complete（循环）
 GET  /api/projects/:id             200 for owner
 POST /api/projects/:id/publish     publishedVersionId + slug
 GET  /p/:slug                      200

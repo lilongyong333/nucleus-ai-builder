@@ -59,6 +59,9 @@ export const generationRuns = sqliteTable("generation_runs", {
   totalTokens: integer("total_tokens").notNull().default(0),
   modelCalls: integer("model_calls").notNull().default(0),
   repairCount: integer("repair_count").notNull().default(0),
+  currentStage: text("current_stage").notNull().default("requirements"),
+  activeStep: text("active_step"),
+  stepStartedAt: text("step_started_at"),
   versionId: text("version_id"),
   error: text("error"),
 }, (table) => [index("idx_generation_runs_project_started").on(table.projectId, table.startedAt)]);
@@ -82,4 +85,40 @@ export const agentEvents = sqliteTable("agent_events", {
 }, (table) => [
   uniqueIndex("uq_agent_events_run_sequence").on(table.runId, table.sequence),
   index("idx_agent_events_project_created").on(table.projectId, table.createdAt),
+]);
+
+export const generationArtifacts = sqliteTable("generation_artifacts", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  projectId: text("project_id").notNull(),
+  agent: text("agent").notNull(),
+  kind: text("kind").notNull(),
+  content: text("content").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_generation_artifacts_run_kind").on(table.runId, table.kind),
+  index("idx_generation_artifacts_project_run").on(table.projectId, table.runId),
+]);
+
+export const modelAttempts = sqliteTable("model_attempts", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  projectId: text("project_id").notNull(),
+  agent: text("agent").notNull(),
+  phase: text("phase").notNull(),
+  model: text("model").notNull(),
+  status: text("status").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  firstTokenMs: integer("first_token_ms"),
+  outputChars: integer("output_chars").notNull().default(0),
+  statusCode: integer("status_code"),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  error: text("error"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  index("idx_model_attempts_run_created").on(table.runId, table.createdAt),
+  index("idx_model_attempts_project_created").on(table.projectId, table.createdAt),
 ]);

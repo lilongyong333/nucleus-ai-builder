@@ -1,6 +1,6 @@
 # Nucleus 开发进度与验收记录
 
-最后更新：2026-08-09
+最后更新：2026-08-10
 
 ## 完成度
 
@@ -8,16 +8,18 @@
 |---|---|---|
 | 工程基线 | ✅ | 独立 Git 仓库、依赖锁定、密钥隔离 |
 | 产品界面 | ✅ | 落地页、响应式三栏工作台、代码/预览切换 |
-| AI 生成 | ✅ | OpenCode Go 规划 + 构建两阶段调用 |
+| AI 生成 | ✅ | Iris → Bob → Alex 三文件 → Ray 审查/修复的真实分步模型工作流 |
 | 运行时 | ✅ | 三文件组装、sandbox、错误桥、storage shim |
-| 数据持久化 | ✅ | D1 schema、migration、运行期初始化 |
+| 数据持久化 | ✅ | D1 Run、Stage、Artifact、ModelAttempt、Event、Version 与 migration |
 | 版本系统 | ✅ | 自动快照、列表、恢复任意版本 |
 | 发布与导出 | ✅ | `/p/[slug]`、公开链接、ZIP 下载 |
-| 质量验证 | ✅ | 测试、类型、lint、生产构建、真实 E2E |
+| 质量验证 | ✅ | 通用 9 项门、贪吃蛇专项契约、模型审查、34 单测、7 浏览器 E2E |
 | 在线部署 | ✅ | 公网站点、D1、服务端密钥和真实生成均已验证 |
 | 公开源码 | ✅ | GitHub Public 仓库已推送，PDF 和密钥未入库 |
 
 ## API 与模型验证
+
+2026-08-09/10 对当前 Go 套餐重新查询并做结构化规划与长代码探针后，正式分步链路选择 `gpt-5.6-luna` 为主模型、`glm-5.2` 为备用。`gpt-5.6-luna` 的结构化规划探针约 4.1 秒，代码探针约 15.4 秒；`glm-5.2` 对应约 11 秒和 24.7 秒。Qwen/Kimi 的部分长代码探针超过 48 秒，因此没有放在正式主备位。以下早期 GLM/Kimi 记录保留为历史证据，不再代表当前默认配置。
 
 - OpenCode Go `/models` 返回 25 个模型；
 - `kimi-k2.7-code` 与 `glm-5.2` 冒烟调用成功；
@@ -60,8 +62,8 @@
 ## 自动化结果
 
 ```text
-Vitest          18 / 18 passed
-Playwright      2 / 2 passed
+Vitest          34 / 34 passed
+Playwright      7 / 7 passed
 TypeScript      passed
 ESLint          passed
 Production      passed
@@ -250,3 +252,38 @@ Production      passed
 - iframe 运行时桥接 `console.log/info/warn/error`，工作台控制台同时接收真实日志、启动成功和运行错误，最多保留最近 100 条；
 - 生成中的模型分片除右侧浮层外，也会进入当前智能体消息，显示真实尾部内容和累计字符数；
 - Playwright 新增“第一条请求未完成时，第二条按 Return 入队并自动接续”的回归；生产域名验收还发现跨匿名会话打开无权限项目时会永远停在 loading，现改为明确的 404/权限错误页并增加第 6 条 E2E；当前 Vitest 32/32、Chromium Playwright 6/6、ESLint 和 TypeScript 全部通过。
+
+## 第十一轮：正式可恢复多 Agent 工作流（P0/P1）
+
+这轮直接针对“贪吃蛇为什么失败却仍显示旧 Todo Demo”和“只提高 Token 为什么仍卡在 60 秒”两个根因，不再继续给旧单请求链路打补丁。
+
+### P0：交付真实性
+
+- 创建 draft 后不再自动启动模型；用户明确点击开始才花额度；
+- 没有 Version 时，右侧显示 `VERSION 0 · NO GENERATED APP`，不再把 `starterFiles` 当成本次模型成果；
+- 只有同一 Run 已保存完整 HTML/CSS/JS Artifact 时，才允许显示“待 Ray 审查候选”；
+- v0 的发布和下载入口禁用；生成失败不会拿无关旧 Demo 掩盖；
+- 修复运行恢复状态的 UI 证据和失败/取消文案，避免把 error 显示成“团队已完成”。
+
+### P1：真实、可恢复、可审计
+
+- 新增短请求 `POST /api/runs` 创建 Run，`POST /api/runs/:id/step` 一次只执行一个阶段；
+- Iris、Bob、Alex HTML、Alex CSS、Alex JS、Ray quality、Ray repair、finalize 都有持久化 `current_stage`；
+- 新增 `generation_artifacts`，对 requirements、architecture、三个代码文件和 quality 做 `(run_id, kind)` 唯一检查点；
+- 新增 `model_attempts`，保存模型、状态、阶段、耗时、首字时间、输出字符数、HTTP 状态、usage 和错误；浏览器中断记为 `cancelled`；
+- 项目 generation lease 与阶段 active-step lease 双重阻止并发；阶段断开后只重跑当前未完成工件；
+- 整个 Run 24 次调用/180K Tokens 硬上限，单阶段 2 次/40K/47 秒；主模型 26 秒并为备用预留 18 秒；达到预算直接终止并保留检查点；
+- `gpt-5.6-luna` 主模型、`glm-5.2` 备用；默认每个代码文件最高 12K Tokens，修复最高 16K；
+- Ray 同时执行通用确定性质量门、真实模型逐项审查和最多两轮定向修复；贪吃蛇额外要求运行循环、方向控制、场景渲染、食物计分和生命周期证据；
+- migration `0006_familiar_iron_monger.sql` 增加阶段租约、Artifact 和 ModelAttempt 表/索引，运行期 schema 初始化兼容已有 D1。
+
+### 本地发布门
+
+- TypeScript：通过；
+- ESLint：通过；
+- Vitest：34/34；
+- Chromium Playwright：7/7；
+- Vinext production build：通过，包含 `/api/runs` 和 `/api/runs/:id/step`；
+- `git diff --check`：通过。
+
+正式 Git commit、GitHub Actions、Sites version 和线上真实贪吃蛇数据将在本轮部署验收完成后补在本节。

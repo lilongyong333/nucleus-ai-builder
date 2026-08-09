@@ -8,7 +8,9 @@
 | GET | `/api/projects` | 当前 owner 的最近项目 | `{ projects, account }` |
 | POST | `/api/projects` | 创建 draft 项目 | `{ project }` |
 | GET | `/api/projects/:id` | 读取一个项目和版本 | `{ project }` |
-| POST | `/api/generate` | 生成或迭代 | NDJSON 事件流 |
+| POST | `/api/runs` | 显式启动可恢复 Run | `{ runId, project }` |
+| POST | `/api/runs/:id/step` | 执行当前 Run 的一个 Agent 阶段 | NDJSON 事件流 |
+| POST | `/api/generate` | 旧版单请求生成接口，仅为兼容保留 | NDJSON 事件流 |
 | POST | `/api/projects/:id/cancel` | 取消当前生成并撤销租约 | `{ cancelled: boolean }` |
 | POST | `/api/projects/:id/restore` | 恢复一个快照 | `{ project }` |
 | POST | `/api/projects/:id/publish` | 生成公开 slug | `{ project }` |
@@ -26,7 +28,7 @@ API 路由都只做薄编排：解析请求、检查字段、调用 `lib` 服务
 
 模型生成可能几十秒。如果把创建和生成绑在一次普通 JSON 请求里，页面在等待期间没有稳定 ID，也不利于重试和恢复。先得到 project ID，后续所有行为都围绕它进行。
 
-## 3. 六张表
+## 3. 八张表
 
 ```mermaid
 erDiagram
@@ -34,6 +36,8 @@ erDiagram
     PROJECTS ||--o{ MESSAGES : has
     PROJECTS ||--o{ GENERATION_RUNS : has
     GENERATION_RUNS ||--o{ AGENT_EVENTS : has
+    GENERATION_RUNS ||--o{ GENERATION_ARTIFACTS : checkpoints
+    GENERATION_RUNS ||--o{ MODEL_ATTEMPTS : audits
     PROJECTS {
       text id PK
       text owner_id
@@ -81,6 +85,9 @@ erDiagram
       integer total_tokens
       integer model_calls
       integer repair_count
+      text current_stage
+      text active_step
+      text step_started_at
       text version_id
       text error
     }
@@ -95,9 +102,32 @@ erDiagram
       integer duration_ms
       integer total_tokens
     }
+    GENERATION_ARTIFACTS {
+      text id PK
+      text run_id
+      text project_id
+      text agent
+      text kind
+      text content
+      text created_at
+      text updated_at
+    }
+    MODEL_ATTEMPTS {
+      text id PK
+      text run_id
+      text agent
+      text phase
+      text model
+      text status
+      integer duration_ms
+      integer first_token_ms
+      integer output_chars
+      integer total_tokens
+      text error
+    }
 ```
 
-`projects.files_json` 是当前状态，`versions.files_json` 是历史快照。`generation_runs` 是每轮总账，`agent_events` 是按 sequence 排序的明细。`owner_id` 控制私有访问，`published_version_id` 固定公开内容，`generation_id` 控制单写者。
+`projects.files_json` 是当前已通过质量门的状态，`versions.files_json` 是历史快照。`generation_runs` 是每轮总账，`agent_events` 是按 sequence 排序的阶段明细，`generation_artifacts` 保存需求、架构、三文件和质量报告检查点，`model_attempts` 保存每一次真实供应商尝试。`owner_id` 控制私有访问，`published_version_id` 固定公开内容，`generation_id` 控制项目级单写者，`active_step` 控制阶段级单写者。
 
 ## 4. D1 binding 是什么
 
@@ -138,6 +168,19 @@ stateDiagram-v2
 
 状态用于 UI 提示，不替代版本记录。真正的代码内容以 `files_json` 和 `versions` 为准。
 
+Run 内部还有一条更细的持久化状态机：
+
+```text
+requirements → architecture
+→ implementation:index.html
+→ implementation:styles.css
+→ implementation:script.js
+→ quality → repair → quality
+→ finalize → completed
+```
+
+每一步最多只执行一个模型阶段。页面刷新时读取 `current_stage` 和已有 Artifact 继续，而不是重新从 Iris 开始。
+
 ## 7. 保存一个版本
 
 `saveGeneration()` 的逻辑：
@@ -151,7 +194,7 @@ stateDiagram-v2
 
 这些写操作放在 D1 batch 中，减少网络往返，也让相关操作更集中。
 
-并发现在由数据库租约而不是前端按钮控制：`beginGeneration()` 原子写入随机 `generation_id`，同项目第二个写者返回 409；完成、失败、取消和事件写入都要求持有相同 ID。`versions(project_id, version_number)` 还有唯一索引作为最后防线。
+并发现在由两级数据库租约而不是前端按钮控制：`beginGeneration()` 原子写入随机 `generation_id`，同项目第二个 Run 返回 409；`acquireGenerationStep()` 再为一个阶段写入随机 `active_step`，重连和双标签不能重复执行同一阶段。完成、失败、取消、Artifact、Attempt、Event 和 Version 写入都要求 Run 仍是 `running`。`versions(project_id, version_number)`、`generation_artifacts(run_id, kind)` 和 `agent_events(run_id, sequence)` 还有唯一索引作为最后防线。
 
 ## 8. 为什么用全量快照
 
@@ -211,7 +254,7 @@ WHERE id = <project.id>;
 - 只取部分摘要，不保存明文 IP；
 - 以小时组成 bucket key；
 - 用 `INSERT ... ON CONFLICT DO UPDATE ... RETURNING count` 原子递增；
-- 默认每小时最多 8 次；
+- 正式 `/api/runs` 主链路默认每小时最多 20 次（旧兼容接口仍为 8 次）；
 - 返回 429 和 `Retry-After: 3600`。
 
 这是成本保护，不是可靠身份认证。NAT 用户可能共享额度，攻击者也可能绕过。生产系统应基于登录用户、项目套餐、全局预算、WAF 和异常检测组合限流。
@@ -233,7 +276,7 @@ WHERE id = <project.id>;
 ## 13. 数据读取边界
 
 - 项目列表只返回轻量项目，不携带完整私有审计 payload；
-- 项目详情最多读取 100 条消息、20 次运行和 200 个事件；
+- 项目详情最多读取 100 条消息、10 次运行、200 个事件、200 个工件和 200 次模型尝试；
 - 公开页只读固定 Version；
 - 账号中心显示工作台/公开页 URL，但不把 API Key、owner ID 或完整模型回复暴露给页面。
 

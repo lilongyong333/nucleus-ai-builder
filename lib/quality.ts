@@ -184,6 +184,67 @@ export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
   };
 }
 
+/**
+ * Small deterministic contracts for app archetypes where a polished static
+ * mock can otherwise look convincing. These checks do not replace Ray's model
+ * review; they provide hard, auditable evidence for the core runtime loop.
+ */
+export function reviewProductContract(prompt: string, files: GeneratedFiles): AppQualityCheck[] {
+  const request = prompt.toLowerCase();
+  if (!/(贪吃蛇|snake)/i.test(request)) return [];
+
+  const html = files["index.html"];
+  const script = files["script.js"];
+  const source = `${html}\n${script}`;
+  return [
+    makeCheck({
+      id: "snake-runtime-loop",
+      label: "贪吃蛇运行循环",
+      passed: /\b(?:setInterval|requestAnimationFrame|setTimeout)\s*\(/.test(script),
+      passDetail: "检测到驱动游戏持续运行的计时或动画循环",
+      failDetail: "没有检测到游戏循环，页面可能只是静态演示",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "snake-direction-controls",
+      label: "方向控制",
+      passed: /(?:keydown|keyup)/i.test(source) && /(?:ArrowUp|ArrowDown|ArrowLeft|ArrowRight|KeyW|KeyA|KeyS|KeyD|\bwasd\b)/i.test(source),
+      passDetail: "检测到键盘方向输入和对应按键映射",
+      failDetail: "缺少可验证的键盘方向控制",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "snake-rendering",
+      label: "游戏场景渲染",
+      passed: /getContext\s*\(\s*["']2d["']\s*\)|createElement\s*\(|grid-template/i.test(source),
+      passDetail: "检测到 Canvas 或 DOM/CSS 网格场景渲染",
+      failDetail: "没有检测到可运行的游戏场景渲染逻辑",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "snake-food-score",
+      label: "食物与计分",
+      passed: /\b(?:food|apple|score|points?)\b/i.test(script) && /(?:textContent|innerText|draw|fillRect|appendChild)/i.test(script),
+      passDetail: "检测到食物/分数状态及其界面更新",
+      failDetail: "缺少食物、得分或得分展示的完整证据",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "snake-lifecycle",
+      label: "碰撞与生命周期",
+      passed: /\b(?:collision|gameOver|gameover|restart|resetGame|startGame|pauseGame|isPaused|wall)\b/i.test(script),
+      passDetail: "检测到碰撞、结束、重开或暂停等生命周期逻辑",
+      failDetail: "缺少碰撞/结束/重开等游戏生命周期证据",
+      weight: 0,
+      blocking: true,
+    }),
+  ];
+}
+
 export function qualityRepairBrief(report: AppQualityReport): string {
   return report.checks
     .filter((check) => check.severity !== "pass")

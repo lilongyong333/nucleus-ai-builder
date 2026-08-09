@@ -1,6 +1,6 @@
 # AI 应用生成器上限基准与真实 Demo 证据
 
-审计日期：2026-08-09
+审计日期：2026-08-10
 
 ## 结论先行
 
@@ -11,7 +11,7 @@ Nucleus 当前已经跨过静态 PoC：它能生成真实交互、保存账号�
 更诚实的定位是：
 
 - **Nucleus 平台本身：L3 持久化在线工作区**；
-- **Nucleus 当前生成物：L1-L2 之间的自包含交互应用**；
+- **Nucleus 当前生成物：通过质量门后为 L2 自包含交互应用**；
 - **商业第一梯队：L4，少数工作流正在接近 L5**。
 
 ## 五级能力上限
@@ -31,7 +31,7 @@ Nucleus 当前已经跨过静态 PoC：它能生成真实交互、保存账号�
 
 | 产品 | 官方证据 | 最值得学习的上限能力 | Nucleus 当前状态 |
 |---|---|---|---|
-| MetaGPT | <https://github.com/FoundationAgents/MetaGPT> | SOP 驱动的产品经理/架构师/工程师角色、结构化工件、轮次和成本预算 | 已实现固定角色阶段、结构化计划、GenerationRun/AgentEvent、调用/Token/时间预算；不是通用 Role/Action/Environment 框架 |
+| MetaGPT | <https://github.com/FoundationAgents/MetaGPT> | SOP 驱动的产品经理/架构师/工程师角色、结构化工件、轮次和成本预算 | 已实现 Iris/Bob/Alex/Ray 真实固定 SOP、Artifact/Attempt/Event、Run/阶段两层预算与断点恢复；不是通用 Role/Action/Environment 框架 |
 | MGX | <https://mgx.dev/usecases/Build-Your-SaaS-Landing-Page-with-AI/> | 多 Agent 讨论、实时渲染、分支/撤销、一键部署、Supabase、可视化局部编辑 | 已有 Agent 时间线、预览、回滚和发布；缺少 Supabase 生成和元素级编辑 |
 | Lovable | <https://docs.lovable.dev/features/testing> | 真实浏览器点击/表单/截图/网络/控制台验证，前端与 Edge Function 测试 | 已有 9 项确定性质量门、Playwright 产品 E2E、运行错误桥和启动校验；尚未在云端自动点击每个生成物 |
 | Lovable | <https://docs.lovable.dev/integrations/github> | GitHub 双向同步、分支测试、可自托管 | Nucleus 源码走 GitHub PR/CI；单个用户生成项目还没有独立 Git 仓库 |
@@ -69,15 +69,28 @@ Nucleus 当前已经跨过静态 PoC：它能生成真实交互、保存账号�
 - 流每 8 秒写入透明心跳，并发送 `no-cache/no-transform` 与禁缓冲响应头；
 - 浏览器断流后读取服务端项目状态，显示“连接恢复中”，轮询同步最终版本，并始终保留取消按钮；重新打开工作台不会重复提交同一生成任务。
 
-对应自动回归已经覆盖“页面打开时服务端任务仍在运行，随后完成并自动恢复结果”，且验证不会再次 POST `/api/generate`。
+对应自动回归已经升级为“页面打开时服务端 Run 仍在运行，自动 POST 同一 `/api/runs/:id/step` 从检查点继续，最终恢复版本”，且验证不会创建第二个 Run。
 
 心跳和恢复改善了断流后的体验，但不能缩短上游模型本身占用的时间。Nucleus 因此把 Iris 规划改成确定性本地 SOP：保留结构化计划与 Agent 审计工件，规划耗时降到毫秒级、零 Token；正常新建应用只需一次代码模型调用。部署后同题复测确认 Iris 从 27 秒降到 0ms，但 Qwen 的复杂三文件输出仍越过长连接窗口，因此代码主模型按真实场景延迟改为 GLM，Qwen 留作故障降级。同题最终在 21 秒完成，且真实新增、搜索、两次流转和统计更新全部通过。
+
+上段是第六轮的历史止血方案。2026-08-10 的正式架构不再用“减少 Agent 数量”换取 60 秒内完成，而是把每个 Agent/文件变成独立可恢复阶段：Iris 和 Bob 恢复为真实模型工件，Alex 三文件分别生成并落盘，Ray 做模型审查与有限修复。整个 Run 可以使用 24 次调用、180K Tokens，但任何一个阶段仍被控制在边缘执行窗口内。这样模型质量、长输出额度和生产可靠性不必三选一。
+
+### 正式链路新增验收指标
+
+后续所有新生产样本除原七项协议外，还必须记录：
+
+1. Run 是否从 `requirements` 完整走到 `completed`；
+2. 六类 Artifact 是否齐全，是否发生覆盖修复；
+3. 每个阶段主备模型、首字时间、输出字符和 Token；
+4. 浏览器中断后是否只重跑未完成阶段；
+5. Ray 的通用门、应用类型门、功能证据和修复轮数；
+6. v0 是否保持真实空状态，失败时是否拒绝发布假版本。
 
 ## 成功率如何表达
 
 目前不能声称“统计上超过 90% 候选人”，因为没有全部候选作品和统一盲测数据。可验证的代理证据是：
 
-- 30 个 Vitest 单测、4 个 Chromium E2E、TypeScript、ESLint、生产构建和 GitHub CI；
+- 当前本地基线 34 个 Vitest 单测、7 个 Chromium E2E、TypeScript、ESLint 和生产构建；GitHub CI 与线上真实 Run 单独记录；
 - 真实账号登录、匿名项目迁移、D1 持久化、固定发布版本和公开链接；
 - 模型空回复、503、超时、401、Token/调用预算、取消、浏览器断流都有明确策略；
 - 每次生成可以审计耗时、Token、模型、修复次数、事件和终态。

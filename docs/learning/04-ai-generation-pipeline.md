@@ -1,257 +1,320 @@
-# 04. AI 生成链路
+# 04. 可恢复的真实多 Agent 生成链路
 
-## 1. API Key 在哪里使用
+最后更新：2026-08-10
 
-模型调用只发生在 `lib/opencode.ts`，它从 Cloudflare Worker 的运行时环境读取：
+## 1. 现在的结论
 
-- `OPENCODE_GO_API_KEY`；
-- `OPENCODE_GO_BASE_URL`；
-- `OPENCODE_GO_MODEL`、`OPENCODE_GO_FALLBACK_MODEL`；
-- 单次超时，以及整轮调用/Token/时间预算。
+当前主链路不再是“一次大模型请求假装四个 Agent”，也不再要求一个 HTTP 长连接承担整轮生成。每个角色都调用真实模型、产生独立工件，并在进入下一阶段前写入 D1：
 
-浏览器永远拿不到真实 Key。变量不能使用 `NEXT_PUBLIC_` 前缀，因为该前缀表示允许打进客户端代码。
+1. Iris 生成需求契约；
+2. Bob 生成架构与测试策略；
+3. Alex 分三次生成 `index.html`、`styles.css`、`script.js`；
+4. Ray 同时执行确定性检查和模型代码审查；
+5. Ray 发现阻断问题时，最多进行两轮定向修复并重新审查；
+6. 只有最后一次审查通过，系统才原子保存 Version。
 
-OpenCode Go 提供多种接口协议。本项目默认模型 `glm-5.2` 使用 OpenAI-compatible 的 `chat/completions`：
+每个阶段是独立、最长约 54 秒的请求。浏览器、网络或托管平台中断时，已经完成的工件不会丢；重新打开项目会从 `current_stage` 和已保存工件继续。
 
-```text
-POST https://opencode.ai/zen/go/v1/chat/completions
-Authorization: Bearer <server-side-secret>
-Content-Type: application/json
+## 2. 完整时序
+
+```mermaid
+sequenceDiagram
+    participant UI as Workbench
+    participant Start as POST /api/runs
+    participant Step as POST /api/runs/:id/step
+    participant DB as Cloudflare D1
+    participant LLM as OpenCode Go
+
+    UI->>Start: projectId + prompt
+    Start->>DB: 原子获取项目生成租约并创建 Run
+    Start-->>UI: runId + generating Project
+
+    loop 直到 completed / failed / cancelled
+        UI->>Step: runId + projectId
+        Step->>DB: 获取本阶段 step lease
+        Step->>DB: 读取 current_stage + artifacts + audit
+        Step->>LLM: 当前 Agent 的独立 SSE 请求
+        LLM-->>Step: 实时 content delta + usage
+        Step-->>UI: NDJSON progress
+        Step->>DB: 保存 ModelAttempt + Artifact + AgentEvent
+        Step->>DB: current_stage 前进一格
+        Step-->>UI: step_complete
+    end
+
+    Step->>DB: Ray 通过后原子保存 Version
+    Step-->>UI: complete + Project
 ```
 
-请求主体的关键字段是：
+这里有两层流：
+
+- 模型供应商到 Worker：OpenAI-compatible SSE；
+- Worker 到浏览器：一行一个 JSON 对象的 NDJSON。
+
+因此左栏看到的字符数、模型名和输出尾部来自真实供应商分片，不是计时器伪造的动画。
+
+## 3. 五个核心 API 动作
+
+### 3.1 创建项目
+
+`POST /api/projects` 只创建 `draft` 项目，不自动花模型额度。v0 工作台明确显示“还没有生成应用”，不会拿历史 Todo Demo 冒充本次需求。
+
+### 3.2 显式启动 Run
+
+`POST /api/runs`：
+
+- 验证当前 owner 是否拥有项目；
+- 验证 prompt 长度；
+- 原子获取项目级 generation lease；
+- 创建 `generation_runs` 记录；
+- 执行每小时额度保护；
+- 返回 `runId`，但不在这个短请求里调用模型。
+
+### 3.3 执行一个阶段
+
+`POST /api/runs/:id/step` 一次只做一个可落盘阶段。路由通过 `active_step` 获取原子 step lease，避免页面双击、重连或两个标签同时执行同一阶段。
+
+### 3.4 同步 Project
+
+每个阶段完成后，前端重新读取 `/api/projects/:id`。这不是多余请求：D1 才是事实来源，浏览器局部状态只是视图缓存。
+
+### 3.5 完成、失败或取消
+
+- 完成：Version、Project 当前文件、assistant message 和 Run 终态一起提交；
+- 失败：保留历史 Version 和本轮全部检查点；
+- 取消：AbortSignal 中止正在进行的模型请求，项目回到 `draft` 或已有版本的 `ready`。
+
+## 4. 每个 Agent 真正做什么
+
+### Iris：需求工程
+
+输入：原始需求，以及迭代时的已有版本信息。
+
+输出 `requirements` JSON 工件：
 
 ```json
 {
-  "model": "glm-5.2",
-  "messages": [
-    { "role": "system", "content": "..." },
-    { "role": "user", "content": "..." }
-  ],
-  "max_tokens": 8000,
-  "stream": false
+  "appName": "响应式贪吃蛇",
+  "summary": "可键盘和触控操作的经典游戏",
+  "archetype": "browser-game",
+  "features": ["方向控制", "食物与增长", "计分", "暂停", "重新开始"],
+  "acceptanceCriteria": ["撞墙后进入 game over", "重新开始会重置分数"],
+  "risks": ["反向移动导致自身碰撞判断错误"],
+  "design": "高对比游戏面板",
+  "testPlan": ["连续改变方向时不能立即反向", "手机方向键可用"]
 }
 ```
 
-这里模型到 Nucleus 服务端不是流式的；Nucleus 服务端自己把阶段状态包装成 NDJSON 流给浏览器。
+这一步解决的是“到底要做什么、怎样算完成”，不是直接写代码。
 
-## 2. 为什么 Iris 现在不再调用模型
+### Bob：架构设计
 
-早期版本用 Planner 和 Builder 两次模型调用。真实生产基准发现，结构化规划占 20 多秒，而应用名、摘要、功能列表和视觉方向可以用明确规则稳定提取。
+输入：原始需求 + Iris 工件。
 
-当前 `lib/planner.ts` 的 `planFromPrompt()` 在本地生成：
+输出 `architecture` JSON 工件，包括：
 
-```json
-{
-  "appName": "旅行预算助手",
-  "summary": "帮助用户规划旅行预算",
-  "features": ["新增预算项", "分类统计", "剩余预算"],
-  "design": "清爽卡片式布局，移动端友好"
-}
-```
+- 信息架构；
+- 状态模型；
+- 交互状态迁移；
+- 三个文件各自职责；
+- 可执行测试策略；
+- 响应式和视觉方向。
 
-这一步仍然是可持久化、可审计的 Iris 工件，但指标是：
+Bob 的价值是让 Alex 不必边写代码边重新猜产品状态。例如贪吃蛇会先明确 `idle / running / paused / gameOver`，再实现计时循环与输入。
 
-- 0 Token；
-- 0 模型调用；
-- 通常 0–1ms；
-- 支持新建/继续迭代摘要；
-- 功能最多 5 项；
-- 根据关键词推导深色、霓虹、清新等视觉方向。
+### Alex：逐文件实现
 
-### Alex 唯一的正常创造性调用
+Alex 不再一次返回三份长代码。每个文件是独立阶段：
 
-输入原始需求、计划和可选的当前文件，输出一段摘要加三个带路径的代码块。
+1. `implementation:index.html`；
+2. `implementation:styles.css`；
+3. `implementation:script.js`。
 
-当前好处：
+每完成一个文件就写入 `generation_artifacts`。生成 CSS 时会看到 HTML；生成 JS 时会看到 HTML 和 CSS；迭代旧项目时还会看到当前 Version，用于保留用户未要求删除的行为。
 
-- 计划可以先显示，降低等待焦虑；
-- Builder 不必同时决定产品范围和写代码；
-- 结构化计划可以持久化，便于版本说明；
-- 计划规则和代码模型可以分别测试；
-- 正常生成只花一次模型往返；
-- 边缘长连接超时风险和费用更低。
-
-这不是把 Agent 变成假动画。Iris 仍写入 requirements AgentEvent；真正需要创造性的 Alex 才使用模型；Ray 主要用确定性代码检查，只有失败才调用一次修复模型。
-
-## 3. 模型输出协议
-
-Builder 必须按这个形式返回：
+输出仍使用带白名单路径的 code fence，例如：
 
 ````text
-<summary>完成旅行预算助手</summary>
-
-```html{path=index.html}
-...HTML...
-```
-
-```css{path=styles.css}
-...CSS...
-```
-
 ```js{path=script.js}
-...JavaScript...
+// 完整 JavaScript
 ```
 ````
 
-协议限制：
+解析器只接受三个文件名，单文件最大 120KB。模型不能通过 `../../` 写入仓库或 Worker 文件系统。
 
-- 只能有这三个文件名；
-- `index.html` 不内嵌 `<style>` 或 `<script>`；
-- 不使用外部库；
-- 主按钮必须有真实行为；
-- 单文件限制大小；
-- 不在生成文件内部再放 Markdown fence。
+### Ray：审查、修复和放行
 
-## 4. 为什么不用一个巨大的 JSON
+Ray 的审查不是一句“看起来不错”。它同时消费：
 
-早期尝试让模型返回：
+- 原始需求；
+- Iris 验收标准；
+- Bob 测试计划；
+- 完整三文件；
+- Acorn/正则产生的确定性检查证据；
+- 应用类型专项检查。
+
+Ray 输出 `quality` JSON 工件，包含功能检查、代码证据、阻断错误和警告。若失败，下一阶段只要求返回有问题的完整文件；修复工件覆盖原工件，然后重新跑全部检查。默认最多两轮，避免无限烧 Token。
+
+## 5. 为什么不把单次 max token 和超时无限拉高
+
+托管 Worker 对一次请求有执行窗口。旧实现把规划、三文件和审查塞在同一请求里，即使模型仍工作，平台也可能在约 60 秒终止连接，留下“生成中”。
+
+正式方案把预算分成两层：
+
+| 层级 | 默认上限 | 目的 |
+|---|---:|---|
+| 整个 Run 模型调用 | 24 次 | 防止错误状态机无限循环 |
+| 整个 Run Tokens | 180,000 | 允许复杂应用和修复，同时保留硬成本边界 |
+| 单阶段模型调用 | 2 次 | 主模型失败后只切一次备用模型 |
+| 单阶段 Tokens | 40,000 | 给长代码足够空间 |
+| 单阶段时间 | 47 秒 | 在平台 60 秒窗口前保存失败/检查点 |
+| 主模型单次等待 | 26 秒 | 给备用模型预留时间 |
+| 备用预留 | 18 秒 | 主模型卡住时仍有恢复机会 |
+
+每个角色还有输出上限：Iris 6K、Bob 7K、HTML/CSS/JS 各 12K、Ray 审查 8K、修复 16K Tokens。它们是“最多允许”，不是要求模型输出废话。
+
+每个新阶段会读取 Run 已使用的 `model_calls` 和 `total_tokens`，再把剩余额度传给模型网关。达到整轮硬上限会产生可审计的终态，而不是继续重试。
+
+## 6. 主模型、备用模型和真实选型
+
+当前正式配置：
+
+- 主模型：`gpt-5.6-luna`；
+- 备用模型：`glm-5.2`。
+
+2026-08-09/10 的同接口探针中：
+
+- `gpt-5.6-luna` 结构化规划约 4.1 秒，代码探针约 15.4 秒，并覆盖 4/5 个目标信号；
+- `glm-5.2` 结构化规划约 11 秒，代码探针约 24.7 秒，作为可用备用；
+- `qwen3.8-max`、`kimi-k2.7-code` 的长代码探针超过 48 秒窗口。
+
+这不是永久排行榜。模型列表、套餐权限和延迟会变化，所以模型 ID 放在服务端环境变量中，代码不绑定某一家模型。
+
+切换规则：
+
+- 5xx、网络错误、主模型超时、空内容：允许备用模型接管；
+- 401、429：直接暴露配置/额度问题，不用备用模型掩盖；
+- 用户取消：不再联系备用模型；
+- Run 调用或 Token 预算耗尽：终止，不继续花费。
+
+每次尝试都会保存 model、状态、HTTP 状态、耗时、首字时间、输出字符数、usage 和错误。浏览器断流导致的模型取消也记录为 `cancelled`。
+
+## 7. 状态机与检查点
+
+`generation_runs.current_stage` 只允许以下值：
+
+```text
+requirements
+→ architecture
+→ implementation:index.html
+→ implementation:styles.css
+→ implementation:script.js
+→ quality
+→ repair → quality（最多两轮）
+→ finalize
+→ completed
+```
+
+工件和阶段更新的顺序是：
+
+1. 完成模型调用；
+2. 保存 `model_attempts`；
+3. 保存或覆盖 `generation_artifacts`；
+4. 保存 done `agent_events`；
+5. 更新 `current_stage`；
+6. 释放 step lease。
+
+如果连接在第 3 步之后断开，恢复逻辑会看到工件已经存在，并跳到下一合理阶段；不会重新生成已保存文件。若断在模型完成前，只重跑当前阶段。
+
+## 8. 真实流式输出为何现在能看到
+
+`lib/model-gateway.ts` 发送 `stream: true` 和 `stream_options.include_usage: true`，逐行解析供应商 SSE：
+
+```text
+data: {"choices":[{"delta":{"content":"..."}}]}
+```
+
+只有 `delta.content` 发到浏览器；模型内部的 `reasoning_content` 不展示。Worker 把每个可见 delta 包装成：
 
 ```json
 {
-  "index.html": "...",
-  "styles.css": "...",
-  "script.js": "..."
+  "type": "progress",
+  "agent": "Alex",
+  "phase": "implementation:script.js",
+  "model": "gpt-5.6-luna",
+  "delta": "...",
+  "totalChars": 4820,
+  "done": false
 }
 ```
 
-代码里大量引号、换行、反斜杠和模板字符串都必须再次转义。输出越长，越容易出现 `Unterminated string`。路径代码块让代码保持原样，解析器只需要找到 fence 的路径与内容，稳定性更高。
+响应每 8 秒还会发一行空心跳，并设置 `no-cache, no-transform` 与 `X-Accel-Buffering: no`，避免代理把小分片攒到最后才显示。
 
-## 5. 解析器怎么工作
+## 9. 质量门如何避免“贪吃蛇其实是 Todo Demo”
 
-`lib/parser.ts` 使用正则寻找 `path=...` 代码块，只接受白名单文件：
+通用确定性检查包括：
 
-```ts
-if (
-  path === "index.html" ||
-  path === "styles.css" ||
-  path === "script.js"
-) {
-  files[path] = content;
-}
-```
+1. JavaScript 语法；
+2. 禁止 `eval`、动态 Function、`document.write`、跨窗口 DOM；
+3. 控件与事件处理同时存在；
+4. 语义 HTML；
+5. viewport；
+6. 响应式 CSS；
+7. 表单可访问名称；
+8. 键盘焦点；
+9. 不依赖外部脚本/样式。
 
-白名单避免模型输出 `../../secret`、服务端文件或意外的几十个文件。
+贪吃蛇需求还会触发五项阻断检查：
 
-解析后调用 `normalizeGeneratedFiles()`，确保：
+- 真实计时/动画循环；
+- 键盘方向键映射；
+- Canvas 或 DOM/CSS 网格场景渲染；
+- 食物与分数状态更新；
+- 碰撞、结束、重开或暂停生命周期。
 
-- 三个文件最终都存在；
-- 内容不是空字符串；
-- 单文件不超过 120,000 字符；
-- 残留的外层 fence 被移除。
+这些规则不证明所有细节绝对正确，所以 Ray 仍要基于代码证据逐项对照 Iris 验收标准。确定性检查负责抓“明显造假或明显缺失”，模型审查负责语义层。
 
-## 6. 增量修改怎么合并
+## 10. 幂等、并发与迟到响应
 
-第一次生成要求三文件完整。继续修改时，模型可能只返回变化文件，例如只返回 `styles.css`。解析器使用：
+- 项目级 `generation_id`：同一项目只允许一个活跃 Run；
+- Run 级 `active_step`：同一阶段只允许一个执行者；
+- `generation_artifacts(run_id, kind)` 唯一索引：同一工件只能 upsert；
+- `agent_events(run_id, sequence)` 唯一索引：审计顺序不可重复；
+- 所有工件、事件和版本写入都再次检查 Run 仍为 `running`；
+- 用户取消后迟到的模型回复无法覆盖项目；
+- 30 分钟没有任何新阶段心跳的 Run 才会被项目读取逻辑回收。
 
-```ts
-normalizeGeneratedFiles({
-  ...currentFiles,
-  ...newFiles,
-});
-```
+## 11. 你应该怎样排查失败
 
-新文件覆盖旧文件，未返回文件沿用当前版本。这是浅合并，但三文件映射正适合这种做法。
+按这个顺序看工作台“执行审计”：
 
-注意：当前实现相信模型能保证跨文件一致性。例如它只改 HTML、却忘记改 JS 时，仍可能产生运行错误；后续可以增加 DOM 静态检查或自动浏览器测试。
+1. `currentStage` 停在哪里；
+2. 该阶段是否已有 Artifact；
+3. ModelAttempt 是 `timeout`、`http_error`、`empty`、`budget_exceeded` 还是 `cancelled`；
+4. 首字时间和输出字符数是否说明模型真的开始输出；
+5. Ray 的 deterministic / productChecks / issues 是什么；
+6. Run 是否仍 `running`，还是已经有明确终态；
+7. 版本是否关联到同一个 runId。
 
-## 7. 模型网关、空返回与主备切换
+不要只看顶部“生成中”三个字，也不要只看供应商 HTTP 200。HTTP 200 可能包含空回复，浏览器断开也不代表服务端没有工件。
 
-`lib/model-gateway.ts` 集中处理所有外部模型调用。线上曾出现 HTTP 成功但 `message.content` 为空，当前策略是：
+## 12. 仍然明确保留的边界
 
-1. 第一次正常请求；
-2. 如果内容为空，追加一条“立即输出最终产物”的用户消息再请求；
-3. 如果某些推理模型把完整产物放在 `reasoning_content`，且其中含协议标记，则容错使用；
-4. 仍无结果才抛错。
+Nucleus 当前生成的是安全沙箱内的三文件浏览器应用，不是任意 Node/Python 全栈容器。因此它还不能：
 
-空回复只重试一次，随后可以进入备用模型。错误分类如下：
+- 为每个生成应用安装任意 npm/pip 依赖；
+- 自动创建独立数据库、Auth、后端 API 和定时任务；
+- 运行生成物级的云端 Playwright 并自动点击所有验收项；
+- 创建独立 Git 分支并让并行 Agent 合并代码；
+- 在预览上选择 DOM 元素做局部可视化编辑。
 
-| 情况 | 是否 fallback | 原因 |
-|---|---|---|
-| 主模型成功 | 否 | 直接返回 |
-| 网络错误、5xx、单次超时 | 是 | 供应商/模型可能暂时不可用 |
-| 连续空回复 | 是 | 当前模型没有交付有效内容 |
-| 401 | 否 | Key/权限错误，换模型通常无效 |
-| 429 | 否 | 套餐/频率额度通常是整体限制 |
-| 用户 AbortSignal | 否 | 用户明确取消，不能继续花费 |
-| 调用/Token/总时长预算耗尽 | 否 | 整轮硬边界已触发 |
+这些是与 Atoms、Replit Agent、Lovable、Bolt 等商业产品的主要差距，不应在面试中伪装成已经完成。
 
-当前默认预算：单次 55 秒、最多 8 次模型请求、50,000 总 Tokens、240 秒整轮时长。构建、补文件和 Ray 修复共享同一个 `ModelBudget`，不是每个阶段重新拿一份额度。
+## 13. 代码入口
 
-## 8. 首次生成漏文件修复
-
-第一次生成不能依赖旧文件。系统先用 `extractGeneratedFiles()` 检查三文件，若发现缺失：
-
-1. 列出缺失文件名；
-2. 把已生成文件和原需求作为上下文；
-3. 发起一次定向 repair 请求；
-4. 要求只返回缺失文件；
-5. 将原回复和 repair 回复一起解析。
-
-这种“检测具体缺陷，再定向补齐”的策略，比把整个大请求盲目重跑更省额度、更稳定。
-
-## 9. 模型选择是怎么做的
-
-我们没有把所有模型都完整跑一遍。正确流程是：
-
-1. 查询 `/models` 了解当前可用列表；
-2. 选代表性代码模型做小型可用性测试；
-3. 再做一两个完整页面的延迟与完整度测试；
-4. 根据质量、延迟、套餐权限和成本选默认值。
-
-实测过程中：
-
-- `qwen3.5-plus` 的结构化规划探针可用，但复杂三文件输出超过边缘长连接窗口；
-- `glm-5.2` 在确定性 Iris 后完成复杂看板只用 21 秒、6,293 Tokens、1 次调用，因此成为代码主模型；
-- `qwen3.5-plus` 保留为 5xx/网络/超时备用；
-- `kimi-k2.7-code` 小请求可用，但完整生成曾超过 180 秒；
-- 某些模型在当时套餐返回 403，因此不能只看模型列表就假设可用。
-
-模型与套餐会变化，测试记录是当时证据，不是永久保证。模型 ID 留在环境变量中，切换时不必改代码。
-
-## 10. Prompt 注入与现实边界
-
-用户输入会进入模型上下文，不能把模型输出当可信代码。当前边界是：
-
-- 输出只能落在三个虚拟文件；
-- 不在 Worker 中执行生成代码；
-- iframe 不授予同源权限；
-- 文件大小受限；
-- 不允许模型控制服务端 Prompt 或 API Key。
-
-仍需注意：生成页面可以在浏览器中发起网络请求、弹窗或诱导用户输入。因此公开平台要增加内容政策、URL 过滤、CSP、举报和审计机制。
-
-## 11. 如何自己调模型参数
-
-### 换模型
-
-只改环境变量并重新部署：
-
-```dotenv
-OPENCODE_GO_MODEL=另一个兼容-chat-completions-的模型ID
-OPENCODE_GO_FALLBACK_MODEL=备用模型ID
-```
-
-不同模型可能使用 `responses` 或 `messages` 端点，不能只改 ID。先核对 OpenCode Go 官方端点表。
-
-### 改输出长度
-
-- Iris planner 不调用模型；
-- Builder 为 8000；
-- Repair 为 5000。
-
-过小会截断文件，过大增加最坏成本和等待时间。还要同时考虑 `OPENCODE_GO_MAX_TOTAL_TOKENS` 与长连接窗口，应该基于真实应用集调整，不要凭感觉无限增大。
-
-## 12. Ray 为什么主要是代码而不是另一个“评审模型”
-
-`lib/quality.ts` 使用 Acorn 解析 JavaScript，并做 9 项确定性检查。确定性检查有三个优点：
-
-- 同一文件得到同一结果；
-- 毫秒级、零 Token；
-- 可以写单元测试和明确失败原因。
-
-只有质量门不通过时，才把结构化问题清单、原需求和文件交给 Ray 做最多一次定向修复，再重新运行全部检查。这样形成有预算上限的闭环，避免模型互相讨论却没有可验证结果。
-
-## 13. 官方延伸阅读
-
-- [OpenCode Go：模型、限额和端点](https://opencode.ai/docs/go/)
+- `app/api/runs/route.ts`：创建 Run；
+- `app/api/runs/[id]/step/route.ts`：可恢复状态机；
+- `lib/opencode.ts`：四个角色的 Prompt、解析与工件类型；
+- `lib/model-gateway.ts`：SSE、主备、超时与预算；
+- `lib/quality.ts`：通用和应用类型质量门；
+- `lib/db.ts`：租约、Artifact、Attempt、Event 和 Version；
+- `components/workbench.tsx`：驱动阶段、恢复、流式展示和审计 UI。
