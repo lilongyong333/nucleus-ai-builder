@@ -35,6 +35,7 @@ const project: Project = {
   updatedAt: "2026-08-09T00:00:00.000Z",
   versions: [],
   runs: [],
+  messages: [],
 };
 
 vi.mock("@/lib/db", () => ({

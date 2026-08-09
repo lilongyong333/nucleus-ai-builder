@@ -64,6 +64,10 @@ function project(versionNumber = 1, quality = firstQuality): Project {
         createdAt: "2026-08-09T00:00:59.100Z",
       }],
     }],
+    messages: [
+      { id: "message-user", projectId: "e2e-project", role: "user", content: "制作一个面试计划板", createdAt: "2026-08-09T00:00:00.000Z" },
+      { id: "message-assistant", projectId: "e2e-project", role: "assistant", content: `版本 ${versionNumber} 已生成`, createdAt: "2026-08-09T00:01:00.000Z" },
+    ],
   };
 }
 
@@ -88,6 +92,9 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
   await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
   await expect(page.locator(".quality-score strong")).toHaveText("92");
   await expect(page.locator(".run-audit-card")).toContainText("200");
+  await page.getByRole("button", { name: /对话/ }).click();
+  await expect(page.getByText("项目对话记忆")).toBeVisible();
+  await expect(page.getByText("制作一个面试计划板")).toBeVisible();
 });
 
 test("renders streamed agent review and the completed version", async ({ page }) => {
@@ -114,4 +121,22 @@ test("renders streamed agent review and the completed version", async ({ page })
   await expect(page.getByText("v2 已保存")).toBeVisible();
   await page.locator(".topbar-actions button").filter({ hasText: "版本" }).click();
   await expect(page.getByText("Ray 100/100")).toBeVisible();
+});
+
+test("shows a signed-in account project library with detailed links", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "oai-authenticated-user-id": "e2e-account",
+    "oai-authenticated-user-email": "candidate@example.com",
+    "oai-authenticated-user-full-name": encodeURIComponent("候选人"),
+    "oai-authenticated-user-full-name-encoding": "percent-encoded-utf-8",
+  });
+  await page.route("**/api/projects", (route) => route.fulfill({ json: { projects: [project(2, finalQuality)] } }));
+
+  await page.goto("/account");
+  await expect(page.getByRole("heading", { name: "候选人" })).toBeVisible();
+  await expect(page.getByText("candidate@example.com", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的项目与成品链接" })).toBeVisible();
+  await expect(page.getByText("工作台详细链接")).toBeVisible();
+  await expect(page.getByText("公开成品链接")).toBeVisible();
+  await expect(page.getByRole("link", { name: /打开工作台/ })).toHaveAttribute("href", "/w/e2e-project");
 });
