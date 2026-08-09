@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createModelBudget, requestChat, type ChatMessage, type GatewayChatResult, type ModelBudget } from "./model-gateway";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
+import { planFromPrompt } from "./planner";
 import { qualityRepairBrief, reviewGeneratedApp } from "./quality";
 import { addUsage, emptyUsage } from "./usage";
 import type { AgentPlan, AppQualityReport, GeneratedFiles, ModelUsage } from "./types";
@@ -12,11 +13,11 @@ function runtimeValue(name: string, fallback = ""): string {
 }
 
 export function activeModel(): string {
-  return runtimeValue("OPENCODE_GO_MODEL", "glm-5.2");
+  return runtimeValue("OPENCODE_GO_MODEL", "qwen3.5-plus");
 }
 
 export function activeModels(): string[] {
-  return [...new Set([activeModel(), runtimeValue("OPENCODE_GO_FALLBACK_MODEL", "qwen3.5-plus")].filter(Boolean))];
+  return [...new Set([activeModel(), runtimeValue("OPENCODE_GO_FALLBACK_MODEL", "glm-5.2")].filter(Boolean))];
 }
 
 function runtimeInteger(name: string, fallback: number, min: number, max: number): number {
@@ -47,28 +48,11 @@ async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBud
   });
 }
 
-function parseObject<T>(text: string): T {
-  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("模型没有返回 JSON 对象");
-  return JSON.parse(cleaned.slice(start, end + 1)) as T;
-}
-
 export async function createPlan(prompt: string, currentFiles?: GeneratedFiles, signal?: AbortSignal, budget = createGenerationBudget()): Promise<{ plan: AgentPlan; usage: ModelUsage; durationMs: number; modelCalls: number; model: string; usedFallback: boolean }> {
-  const context = currentFiles ? "This is an iteration on an existing app." : "This is a new app.";
-  const result = await chat([
-    { role: "system", content: "You are Iris, a concise senior product designer. Return JSON only, never markdown." },
-    { role: "user", content: `${context}\nUser request: ${prompt}\nReturn exactly {"appName":"short name","summary":"one sentence in Chinese","features":["3-5 concrete features in Chinese"],"design":"visual direction in Chinese"}.` },
-  ], 900, budget, signal);
-  const value = parseObject<Partial<AgentPlan>>(result.content);
-  const plan = {
-    appName: String(value.appName || "Nucleus App").slice(0, 48),
-    summary: String(value.summary || prompt).slice(0, 240),
-    features: Array.isArray(value.features) ? value.features.map(String).slice(0, 6) : ["核心交互"],
-    design: String(value.design || "简洁、清晰、响应式").slice(0, 240),
-  };
-  return { plan, usage: result.usage, durationMs: result.durationMs, modelCalls: result.calls, model: result.model, usedFallback: result.model !== activeModels()[0] };
+  void budget;
+  const startedAt = Date.now();
+  signal?.throwIfAborted();
+  return { plan: planFromPrompt(prompt, Boolean(currentFiles)), usage: emptyUsage(), durationMs: Date.now() - startedAt, modelCalls: 0, model: "Iris deterministic SOP", usedFallback: false };
 }
 
 export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: GeneratedFiles, signal?: AbortSignal, budget = createGenerationBudget()): Promise<{ files: GeneratedFiles; summary: string; quality: AppQualityReport; usage: ModelUsage; durationMs: number; modelCalls: number; repairCount: number; model: string; models: string[]; usedFallback: boolean }> {
