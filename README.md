@@ -2,7 +2,7 @@
 
 > 描述一个想法，AI 智能体团队为你规划、构建并交付一个真正可运行的网页应用。
 
-Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注册，输入一句需求即可看到 Iris（需求）、Bob（架构）、Alex（开发）和 Ray（检查）协作完成规划、代码生成、预览和版本保存。
+Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接体验；登录后项目、版本和对话记忆会随账号跨设备保存。输入一句需求即可看到 Iris（需求）、Bob（架构）、Alex（开发）和 Ray（检查）协作完成规划、代码生成、预览和版本保存。
 
 **在线体验：** https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
@@ -11,9 +11,11 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注�
 ## 已实现功能
 
 - 一句话创建 HTML / CSS / JavaScript 三文件应用
-- OpenCode Go 模型真实调用，默认使用 `glm-5.2`
+- OpenCode Go 真实调用，默认 `qwen3.5-plus`，失败时降级到 `glm-5.2`
+- Iris 使用确定性本地 SOP 产出结构化计划；正常新建只需一次代码模型调用
+- 单次请求超时与整轮调用/Token/时间预算，最终实际模型写入审计
 - 智能体工作时间线和结构化产品计划
-- sandbox iframe 中的可交互实时预览
+- sandbox iframe 中的可交互实时预览、启动校验和运行错误回传
 - 桌面 / 手机预览切换和源码查看
 - 基于当前版本继续对话修改
 - 运行错误回传，并可一键交给 Ray 修复
@@ -22,6 +24,8 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。用户无需注�
 - 匿名会话工作区：项目列表、读取、生成、恢复和发布均按 HttpOnly 会话隔离
 - 同项目生成租约与取消：并发请求返回 409，取消会尝试中止上游请求并可靠撤销旧任务落库权限
 - Cloudflare D1 云端项目、消息和版本持久化
+- Sign in with ChatGPT 账号、匿名项目迁移、跨设备项目中心和最近 100 条对话记忆
+- 长任务心跳；浏览器断流后轮询服务端并自动恢复完成版本，仍可取消遗留任务
 - 全量版本快照、质量评分持久化、历史版本恢复
 - 公开发布页 `/p/[slug]` 固定到明确版本，后续草稿不会静默改变已发布内容
 - ZIP 源码下载
@@ -54,7 +58,8 @@ pnpm dev
 ```dotenv
 OPENCODE_GO_API_KEY=
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=glm-5.2
+OPENCODE_GO_MODEL=qwen3.5-plus
+OPENCODE_GO_FALLBACK_MODEL=glm-5.2
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -79,12 +84,14 @@ pnpm build
   → 创建 Project / Message
   → Iris 生成结构化计划
   → Alex 生成带 path 的三个代码块
+  → 共享调用 / Token / 时间预算，主模型失败时受控降级
   → 解析并与当前版本增量合并
   → 写入 AgentEvent 审计轨迹与 GenerationRun 用量汇总
   → 写入 Version 全量快照
   → 注入 CSS / runtime / JavaScript
   → sandbox iframe 运行
-  → error / unhandledrejection 回传工作台
+  → ready / error / unhandledrejection 回传工作台
+  → 浏览器断流时读取服务端状态并恢复结果
 ```
 
 ## 工程取舍
@@ -96,6 +103,8 @@ pnpm build
 ## 文档
 
 - [架构与取舍](docs/DESIGN.md)
+- [企业级开发、GitHub、部署与排障教学](docs/ENGINEERING-HANDBOOK.md)
+- [同类第一梯队上限基准与真实 Demo](docs/UPPER-BOUND-BENCHMARK.md)
 - [与 MetaGPT / Atoms 的差距分析与优化路线](docs/METAGPT-GAP-ANALYSIS.md)
 - [开发进度与验收记录](docs/PROGRESS.md)
 - [提交说明](docs/SUBMISSION.md)

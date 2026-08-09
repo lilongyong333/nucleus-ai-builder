@@ -2,7 +2,10 @@
 
 在线体验：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
-已发布示例：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a
+已发布示例：
+
+- BudgetLens 财务 CRUD：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/budgetlens-4e9b1d
+- 面试准备清单：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a
 
 公开源码：https://github.com/lilongyong333/nucleus-ai-builder
 
@@ -19,8 +22,8 @@
 - 只生成前端三文件，换取在线演示的可靠性；
 - D1 保存项目和全量版本快照，而不是浏览器本地存储；
 - path code fence 传输长代码，避免大 JSON 转义失败；
-- 游客直接体验，不用登录阻断评审路径；
-- 选择实测约 32 秒的 `glm-5.2`，不为了模型数量做高成本 Race Mode。
+- 游客直接体验；Sign in with ChatGPT 后匿名项目、版本和对话迁移到账号并跨设备保存；
+- 主模型选择实测更稳定的 `qwen3.5-plus`，`glm-5.2` 作为备用；不做高成本 Race Mode。
 
 ## 4. 已完成功能
 
@@ -33,6 +36,9 @@
 - 固定版本的公开发布链接、ZIP 下载；
 - Ray 质量评分、GitHub Actions 和 Playwright 浏览器回归；
 - 每轮生成的可展开执行审计：Agent 阶段、耗时、Token、模型调用数、修复次数与最终状态；
+- 账号项目中心、工作台/公开成品详细链接、最近 100 条项目对话记忆；
+- 主备模型自动切换和共享调用/Token/时间预算；
+- 预览启动校验、长任务心跳、浏览器断流后的服务端结果恢复与遗留任务取消；
 - 响应式界面、错误状态和预置可运行内容。
 
 ## 5. 扩展能力
@@ -41,19 +47,21 @@
 
 ## 6. 局限与继续投入方向
 
-当前不生成后端和任意 npm 依赖。访客使用 HttpOnly 匿名工作区而非完整账号系统；generation run 与模型 Token 已可审计，但尚未把不同供应商 Token 换算为金额。如果继续投入，优先增加 Provider 超时切换、截图视觉复检和可选登录迁移，最后才扩展到隔离容器中的全栈生成。
+当前不生成后端和任意 npm 依赖。平台账号、项目和对话已持久化，但单个生成应用仍是自包含前端，不拥有独立数据库/Auth。下一优先级是云端浏览器点击/截图 QA 和受控生成应用数据 API，最后才扩展到隔离容器中的任意全栈执行。
 
 ## 7. 演示建议（60–90 秒）
 
-1. 首页输入“旅行预算规划器”；
-2. 展示四个 Agent 的计划和执行过程；
-3. 在生成应用里新增、删除一笔预算；
-4. 输入“增加深色模式”继续修改；
-5. 打开版本历史，恢复上一版再切回；
-6. 展开“执行审计”，说明阶段耗时、Token、模型调用、Ray 修复次数和运行 ID；
-7. 展示 Ray 质量分，点击发布并打开固定版本的公开页；
+1. 用 ChatGPT 登录，展示账号项目中心、工作台详细链接和公开成品链接；
+2. 打开 BudgetLens，实际新增/删除一笔预算；
+3. 展示“启动校验通过”和 Ray 100/A；
+4. 展开执行审计，说明 38 秒、7,470 Tokens、2 次模型调用和运行 ID；
+5. 打开对话记忆与版本历史；
+6. 输入“增加预算超支提醒”继续修改并展示状态恢复/取消；
+7. 发布并打开固定版本公开页；
 8. 点击下载，展示三文件代码包。
 
 ## 8. AI 工具使用
 
 Codex 用于需求拆解、上游审阅、实现、测试与文档；OpenCode Go 用作产品内部的规划和生成模型。项目保留了逐阶段的实际问题与修复记录，见 `docs/PROGRESS.md`。
+
+完整教学见 `docs/ENGINEERING-HANDBOOK.md`；第一梯队对照、能力上限和生产样本见 `docs/UPPER-BOUND-BENCHMARK.md`。

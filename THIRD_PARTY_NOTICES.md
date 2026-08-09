@@ -34,3 +34,7 @@
 ## npm 依赖
 
 React、Vinext、Drizzle ORM、JSZip、Lucide、Acorn 和 Vitest 等依赖通过 `package.json` 与 `pnpm-lock.yaml` 锁定，按各自许可证使用，未复制其源码到本仓库。
+
+## 商业产品官方文档研究
+
+为建立能力上限矩阵，阅读了 MGX、Lovable、Bolt、Replit Agent 和 v0 的官方公开产品文档。只比较了浏览器测试、数据库/Auth、版本检查点、Git 工作流、部署和可视化编辑等产品能力，没有复制这些闭源产品的源码、提示词、商标素材或界面。来源链接集中记录在 `docs/UPPER-BOUND-BENCHMARK.md`。
