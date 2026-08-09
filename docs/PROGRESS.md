@@ -116,7 +116,11 @@ Production      passed
 - Vitest 18/18：新增 usage 规范化/累加测试，以及模型失败时终态事件和 metrics 持久化测试；
 - Playwright 2/2：工作台能显示运行摘要，并可展开查看 Agent 事件；
 - 真实本地 D1 取消链路：创建 201、生成流 200、取消 200、读取 200；项目回到 `draft`，运行状态为 `cancelled`，耗时 184ms，版本数为 0，已保存 1 条取消前事件；
-- 真实模型完成态、GitHub CI 与新版线上部署结果在本轮提交发布后补充。
+- GitHub Actions `verify` 在 Linux + Chromium 环境通过；
+- Sites 版本 10 从提交 `8e6c54f23eb165e83fca43e00037584ec5af66cb` 发布成功，首页和工作台正常打开；
+- 新匿名会话真实生成“面试准备清单”：18 秒完成、4,954 Tokens、2 次模型调用、0 次 Ray 修复、11 条有序事件，运行状态 `completed`，模型 `glm-5.2`；
+- 该运行成功关联 v1，Ray 质量门 100/A、9/9 通过；工作台可展开显示 Iris/Bob/Alex/Ray 的阶段和用量；
+- 生成应用实际完成“新增任务 → 键盘勾选完成 → 完成筛选”，进度从 0/1 更新为 1/1、100%，证明交付物不是静态 PoC。
 
 ## MetaGPT-inspired 质量闭环
 

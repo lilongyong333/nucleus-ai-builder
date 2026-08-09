@@ -2,7 +2,7 @@
 
 在线体验：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site
 
-已发布示例：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-c4fbb7
+已发布示例：https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.site/p/app-6e0e9a
 
 公开源码：https://github.com/lilongyong333/nucleus-ai-builder
 
