@@ -104,6 +104,8 @@ pnpm build
 
 ## 文档
 
+- [完整文档中心](docs/README.md)
+- [从零到上线：完整教学手册](docs/learning/README.md)
 - [架构与取舍](docs/DESIGN.md)
 - [企业级开发、GitHub、部署与排障教学](docs/ENGINEERING-HANDBOOK.md)
 - [同类第一梯队上限基准与真实 Demo](docs/UPPER-BOUND-BENCHMARK.md)

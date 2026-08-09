@@ -2,6 +2,8 @@
 
 这份文档面向“能使用电脑和命令行，但不一定看得懂全部前端代码”的读者。目标不是让你背代码，而是让你能解释：产品怎么拆、数据怎么流、为什么安全、GitHub 为什么这样用、线上页面怎么部署、出现故障怎么判断。
 
+它是快速总览；完整的逐章教程、真实施工日志和从零落地命令位于 [`docs/learning/README.md`](learning/README.md)，尤其是 [`00-how-we-got-here.md`](learning/00-how-we-got-here.md) 与 [`13-zero-to-production-runbook.md`](learning/13-zero-to-production-runbook.md)。
+
 ## 1. 先认识 CLI、IDE 和浏览器
 
 - **CLI（命令行界面）**：在终端里输入命令，例如 `pnpm test`、`git status`。适合安装依赖、运行测试、Git 和部署自动化。
