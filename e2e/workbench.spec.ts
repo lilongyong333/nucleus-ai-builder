@@ -193,6 +193,15 @@ test("recovers a server-side generation after the browser stream disconnects", a
   expect(generationPosts).toBe(0);
 });
 
+test("shows a clear access error instead of an endless loading state", async ({ page }) => {
+  await page.route("**/api/projects/missing-project", (route) => route.fulfill({ status: 404, json: { error: "项目不存在" } }));
+  await page.goto("/w/missing-project");
+  await expect(page.getByRole("heading", { name: "无法打开这个项目" })).toBeVisible();
+  await expect(page.getByText("项目不存在", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "返回首页创建新应用" })).toHaveAttribute("href", "/");
+  await expect(page.getByText("正在打开工作台…")).toHaveCount(0);
+});
+
 test("queues a second message with Return while the current generation is running", async ({ page }) => {
   const initialProject = project();
   const firstCompleted = project(2, finalQuality);

@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** 真实模型 SSE 与对话式工作台已经合并；32 个 Vitest、5 个 Chromium E2E、ESLint、TypeScript 和生产构建组成发布门。Sites production version 号与 Git commit 会在每次发布后写入 `docs/PROGRESS.md`，不要用旧文档中的某个历史 version 判断线上是否最新。
+> **当前验证基线：** 真实模型 SSE 与对话式工作台已经合并；32 个 Vitest、6 个 Chromium E2E、ESLint、TypeScript 和生产构建组成发布门。Sites production version 号与 Git commit 会在每次发布后写入 `docs/PROGRESS.md`，不要用旧文档中的某个历史 version 判断线上是否最新。
 
 ## 先看结论
 

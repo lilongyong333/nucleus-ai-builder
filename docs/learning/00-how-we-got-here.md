@@ -285,7 +285,7 @@ glm-5.2 -> qwen3.5-plus
 
 ```powershell
 pnpm test             # 32/32
-pnpm test:e2e         # 5/5 Chromium（含连续消息队列）
+pnpm test:e2e         # 6/6 Chromium（含连续消息队列与无权限错误页）
 pnpm lint
 pnpm exec tsc --noEmit
 pnpm build

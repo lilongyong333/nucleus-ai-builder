@@ -35,6 +35,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [generating, setGenerating] = useState(false);
   const [requestText, setRequestText] = useState("");
   const [activePrompt, setActivePrompt] = useState<string | null>(null);
@@ -251,7 +252,11 @@ export function Workbench({ projectId }: { projectId: string }) {
         startedRef.current = true;
         void runGenerate(value.prompt);
       }
-    }).catch((cause) => setNotice(cause instanceof Error ? cause.message : "读取项目失败")).finally(() => setLoading(false));
+    }).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : "读取项目失败";
+      setLoadError(message);
+      setNotice(message);
+    }).finally(() => setLoading(false));
   }, [projectId, runGenerate]);
 
   useEffect(() => {
@@ -387,7 +392,8 @@ export function Workbench({ projectId }: { projectId: string }) {
     setNotice("代码包已下载");
   }
 
-  if (loading || !project) return <div className="workbench-loading"><span className="brand-mark"><Boxes size={22} /></span><LoaderCircle className="spin" size={22} /><p>正在打开工作台…</p></div>;
+  if (loading) return <div className="workbench-loading"><span className="brand-mark"><Boxes size={22} /></span><LoaderCircle className="spin" size={22} /><p>正在打开工作台…</p></div>;
+  if (!project) return <main className="workbench-load-error"><span className="brand-mark"><CircleAlert size={22} /></span><p>PROJECT ACCESS</p><h1>无法打开这个项目</h1><span>{loadError || "项目不存在，或它属于另一个账号 / 匿名会话。"}</span><a href="/"><ArrowLeft size={15} /> 返回首页创建新应用</a></main>;
   const latestRun = project.runs[0];
   const busy = generating || project.status === "generating";
   const displayTimeline = timeline.length > 0 ? timeline : timelineFromProject(project);

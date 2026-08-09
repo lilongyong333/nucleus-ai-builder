@@ -249,4 +249,4 @@ Production      passed
 - 修正新一轮生成计时错误：本地 POST 发起时使用独立开始时间，不再误用上一轮 D1 `startedAt` 而显示几十或几百秒；刷新恢复时仍以服务端运行时间为准；
 - iframe 运行时桥接 `console.log/info/warn/error`，工作台控制台同时接收真实日志、启动成功和运行错误，最多保留最近 100 条；
 - 生成中的模型分片除右侧浮层外，也会进入当前智能体消息，显示真实尾部内容和累计字符数；
-- Playwright 新增“第一条请求未完成时，第二条按 Return 入队并自动接续”的回归；当前 Vitest 32/32、Chromium Playwright 5/5、ESLint 和 TypeScript 全部通过。
+- Playwright 新增“第一条请求未完成时，第二条按 Return 入队并自动接续”的回归；生产域名验收还发现跨匿名会话打开无权限项目时会永远停在 loading，现改为明确的 404/权限错误页并增加第 6 条 E2E；当前 Vitest 32/32、Chromium Playwright 6/6、ESLint 和 TypeScript 全部通过。
