@@ -34,6 +34,36 @@ function project(versionNumber = 1, quality = firstQuality): Project {
     createdAt: "2026-08-09T00:00:00.000Z",
     updatedAt: "2026-08-09T00:01:00.000Z",
     versions: [{ id: versionId, projectId: "e2e-project", versionNumber, files: starterFiles, summary: `版本 ${versionNumber}`, model: "test-model", quality, createdAt: "2026-08-09T00:01:00.000Z" }],
+    runs: [{
+      id: `run-${versionNumber}`,
+      projectId: "e2e-project",
+      prompt: "制作一个面试计划板",
+      status: "completed",
+      model: "test-model",
+      startedAt: "2026-08-09T00:00:58.800Z",
+      completedAt: "2026-08-09T00:01:00.000Z",
+      durationMs: 1200,
+      usage: { promptTokens: 120, completionTokens: 80, totalTokens: 200 },
+      modelCalls: 2,
+      repairCount: 0,
+      versionId,
+      error: null,
+      events: [{
+        id: `event-${versionNumber}`,
+        runId: `run-${versionNumber}`,
+        projectId: "e2e-project",
+        sequence: 1,
+        agent: "Iris",
+        phase: "requirements",
+        state: "done",
+        title: "需求分析完成",
+        detail: "2 个可验证功能",
+        durationMs: 300,
+        model: "test-model",
+        usage: { promptTokens: 60, completionTokens: 40, totalTokens: 100 },
+        createdAt: "2026-08-09T00:00:59.100Z",
+      }],
+    }],
   };
 }
 
@@ -57,6 +87,7 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
   await expect(page).toHaveURL(/\/w\/e2e-project$/);
   await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
   await expect(page.locator(".quality-score strong")).toHaveText("92");
+  await expect(page.locator(".run-audit-card")).toContainText("200");
 });
 
 test("renders streamed agent review and the completed version", async ({ page }) => {
@@ -78,6 +109,8 @@ test("renders streamed agent review and the completed version", async ({ page })
   await page.getByRole("button", { name: "发送修改需求" }).click();
 
   await expect(page.locator(".quality-score strong")).toHaveText("100");
+  await page.locator(".run-audit-card summary").click();
+  await expect(page.locator(".run-audit-card")).toContainText("Iris");
   await expect(page.getByText("v2 已保存")).toBeVisible();
   await page.locator(".topbar-actions button").filter({ hasText: "版本" }).click();
   await expect(page.getByText("Ray 100/100")).toBeVisible();
