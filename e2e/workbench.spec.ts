@@ -90,6 +90,7 @@ test("creates a project and opens the functional workbench", async ({ page }) =>
 
   await expect(page).toHaveURL(/\/w\/e2e-project$/);
   await expect(page.getByTitle("面试计划板 预览")).toBeVisible();
+  await expect(page.locator(".runtime-status.passed")).toContainText("启动校验通过");
   await expect(page.locator(".quality-score strong")).toHaveText("92");
   await expect(page.locator(".run-audit-card")).toContainText("200");
   await page.getByRole("button", { name: /对话/ }).click();

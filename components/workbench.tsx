@@ -28,6 +28,8 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [activeFile, setActiveFile] = useState<keyof GeneratedFiles>("index.html");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [previewError, setPreviewError] = useState("");
+  const [previewState, setPreviewState] = useState<"checking" | "passed" | "error">("checking");
+  const [previewKey, setPreviewKey] = useState(0);
   const [notice, setNotice] = useState("");
   const [showVersions, setShowVersions] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
@@ -43,6 +45,9 @@ export function Workbench({ projectId }: { projectId: string }) {
     } else if (event.type === "review") {
       setLiveQuality(event.report);
     } else if (event.type === "complete") {
+      setPreviewError("");
+      setPreviewState("checking");
+      setPreviewKey((value) => value + 1);
       setProject(event.project);
       setLivePlan(event.project.plan);
       setLiveQuality(currentQuality(event.project));
@@ -131,7 +136,11 @@ export function Workbench({ projectId }: { projectId: string }) {
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow || event.data?.source !== "nucleus-preview") return;
-      if (event.data.type === "error") setPreviewError(String(event.data.message || "预览运行出错"));
+      if (event.data.type === "error") {
+        setPreviewError(String(event.data.message || "预览运行出错"));
+        setPreviewState("error");
+      }
+      if (event.data.type === "ready") setPreviewState("passed");
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
@@ -145,10 +154,17 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   const srcDoc = useMemo(() => project ? composePreview(project.files) : "", [project]);
 
+  function reloadPreview() {
+    setPreviewError("");
+    setPreviewState("checking");
+    setPreviewKey((value) => value + 1);
+  }
+
   async function restore(versionId: string) {
     const response = await fetch(`/api/projects/${projectId}/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ versionId }) });
     const data = await response.json() as { error?: string; project: Project };
     if (!response.ok) return setNotice(data.error || "恢复失败");
+    setPreviewError(""); setPreviewState("checking"); setPreviewKey((value) => value + 1);
     setProject(data.project); setLiveQuality(currentQuality(data.project)); setShowVersions(false); setNotice("版本已恢复"); setActiveTab("preview");
   }
 
@@ -206,11 +222,11 @@ export function Workbench({ projectId }: { projectId: string }) {
       {!sidebarOpen && <button className="reopen-sidebar" onClick={() => setSidebarOpen(true)}><Bot size={18} /><span>智能体</span></button>}
 
       <section className="canvas-panel">
-        <div className="canvas-toolbar"><div className="view-tabs"><button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}><Play size={14} />预览</button><button className={activeTab === "code" ? "active" : ""} onClick={() => setActiveTab("code")}><Code2 size={14} />代码</button></div><div className="canvas-actions">{activeTab === "preview" && <div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div>}<button onClick={() => setPreviewError("")} aria-label="刷新"><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏"><Maximize2 size={15} /></button></div></div>
+        <div className="canvas-toolbar"><div className="view-tabs"><button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}><Play size={14} />预览</button><button className={activeTab === "code" ? "active" : ""} onClick={() => setActiveTab("code")}><Code2 size={14} />代码</button></div><div className="canvas-actions">{activeTab === "preview" && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{previewState === "checking" ? "启动校验中" : previewState === "passed" ? "启动校验通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}<button onClick={reloadPreview} aria-label="刷新"><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏"><Maximize2 size={15} /></button></div></div>
 
         {previewError && <div className="runtime-error"><CircleAlert size={16} /><div><strong>预览发现运行错误</strong><span>{previewError}</span></div><button onClick={() => void runGenerate(`请修复这个运行错误，并保持当前功能：${previewError}`)} disabled={generating}><Sparkles size={14} /> 让 Ray 修复</button><button className="icon-button" onClick={() => setPreviewError("")}><X size={14} /></button></div>}
 
-        {activeTab === "preview" ? <div className={`preview-stage ${device}`}><div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
+        {activeTab === "preview" ? <div className={`preview-stage ${device}`}><div className="preview-browser"><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div><Laptop size={14} /></div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div></div> : <div className="code-workspace"><aside className="file-tree"><div><span>项目文件</span><small>3 files</small></div>{(Object.keys(project.files) as Array<keyof GeneratedFiles>).map((path) => <button key={path} className={activeFile === path ? "active" : ""} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span>{path}</span><small>{Math.max(1, Math.round(project.files[path].length / 1000))}k</small></button>)}</aside><section className="code-editor"><header><span>{activeFile}</span><button onClick={() => { void navigator.clipboard.writeText(project.files[activeFile]); setNotice("代码已复制"); }}><Copy size={14} />复制</button></header><pre><code>{project.files[activeFile]}</code></pre></section></div>}
       </section>
 
       {showVersions && <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={() => setShowVersions(false)} aria-label="关闭版本历史" /><aside className="version-drawer"><header><div><span>版本历史</span><small>每次生成都会自动建立检查点</small></div><button className="icon-button" onClick={() => setShowVersions(false)}><X size={18} /></button></header><div className="version-list">{project.versions.map((version) => <article className={project.currentVersionId === version.id ? "current" : ""} key={version.id}><div className="version-number">v{version.versionNumber}</div><div><strong>{version.summary}</strong><span><Clock3 size={12} /> {new Date(version.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><small>{version.model}{version.quality ? ` · Ray ${version.quality.score}/100` : ""}</small></div>{project.currentVersionId === version.id ? <b><Check size={12} />当前</b> : <button onClick={() => void restore(version.id)}><RotateCcw size={13} />恢复</button>}</article>)}</div></aside></div>}

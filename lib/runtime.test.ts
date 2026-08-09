@@ -7,6 +7,7 @@ describe("preview runtime", () => {
     expect(html).toContain("<style>");
     expect(html).toContain("<script>");
     expect(html).toContain("__nucleus_probe__");
+    expect(html).toContain("type:'ready'");
     expect(html).toContain("task-form");
   });
 
