@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { completeRunnerJob, markRunnerJobRunning, recordRuntimeEvidence } from "./app-platform-db";
 import type { AppManifest, GeneratedFiles, RunnerJob } from "./types";
+import { buildSandboxContract, SandboxPolicyError, signRunnerPayload } from "./sandbox-policy";
+import { createInstallationAccessToken } from "./github-app";
 
 export class RunnerProviderError extends Error {
   constructor(message: string, readonly status = 500) {
@@ -13,7 +15,8 @@ export async function dispatchPlaywrightJob(job: RunnerJob, callbackOrigin: stri
   if (job.kind !== "playwright") throw new RunnerProviderError("Runner 类型不匹配", 400);
   if (job.status !== "queued") return job;
   const runtime = env as unknown as Record<string, unknown>;
-  const token = stringValue(runtime.GITHUB_AUTOMATION_TOKEN);
+  const installationId = stringValue(runtime.GITHUB_RUNNER_INSTALLATION_ID);
+  const token = stringValue(runtime.GITHUB_AUTOMATION_TOKEN) || (installationId ? await createInstallationAccessToken(installationId) : "");
   const repository = stringValue(runtime.GITHUB_RUNNER_REPOSITORY);
   const ref = stringValue(runtime.GITHUB_RUNNER_REF) || "main";
   if (!token || !repository || !stringValue(runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN)) throw new RunnerProviderError("云端 Playwright Runner 尚未完成服务端配置", 409);
@@ -57,19 +60,33 @@ export async function dispatchContainerJob(job: RunnerJob, callbackOrigin: strin
   let target: URL;
   try { target = new URL(endpoint); } catch { throw new RunnerProviderError("NUCLEUS_CONTAINER_RUNNER_URL 格式无效", 500); }
   if (target.protocol !== "https:" && target.hostname !== "localhost" && target.hostname !== "127.0.0.1") throw new RunnerProviderError("容器 Runner 必须使用 HTTPS", 500);
+  const allowedRegistries = stringValue(runtime.NUCLEUS_ALLOWED_CONTAINER_REGISTRIES).split(",").map((item) => item.trim()).filter(Boolean);
+  let contract;
+  try {
+    contract = await buildSandboxContract(artifact.files, artifact.manifest, allowedRegistries);
+  } catch (error) {
+    if (error instanceof SandboxPolicyError) {
+      await completeRunnerJob(job.id, "failed", { message: error.message, policyRule: error.rule });
+      throw new RunnerProviderError(error.message, 422);
+    }
+    throw error;
+  }
+  const payload = JSON.stringify({
+    jobId: job.id,
+    projectId: job.projectId,
+    versionId: job.versionId,
+    files: artifact.files,
+    dependencies: artifact.manifest.dependencies,
+    functions: artifact.manifest.backend.functions,
+    callback: { url: `${callbackOrigin.replace(/\/$/, "")}/api/runner/callback`, bearerToken: callbackToken },
+    contract,
+  });
+  const timestamp = String(Math.floor(Date.now() / 1_000));
+  const signature = await signRunnerPayload(payload, providerToken, timestamp);
   const response = await fetch(target, {
     method: "POST",
-    headers: { Authorization: `Bearer ${providerToken}`, "Content-Type": "application/json", "User-Agent": "Nucleus-AI-Builder" },
-    body: JSON.stringify({
-      jobId: job.id,
-      projectId: job.projectId,
-      versionId: job.versionId,
-      files: artifact.files,
-      dependencies: artifact.manifest.dependencies,
-      functions: artifact.manifest.backend.functions,
-      callback: { url: `${callbackOrigin.replace(/\/$/, "")}/api/runner/callback`, bearerToken: callbackToken },
-      limits: { cpuSeconds: 120, memoryMb: 1024, diskMb: 2048, network: "egress-filtered" },
-    }),
+    headers: { Authorization: `Bearer ${providerToken}`, "Content-Type": "application/json", "User-Agent": "Nucleus-AI-Builder", "X-Nucleus-Timestamp": timestamp, "X-Nucleus-Signature": `v1=${signature}` },
+    body: payload,
   });
   if (!response.ok) {
     const detail = await response.text();

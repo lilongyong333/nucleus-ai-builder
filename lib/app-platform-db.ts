@@ -1,6 +1,18 @@
 import { env } from "cloudflare:workers";
 import { collectionSchema } from "./app-manifest";
+import {
+  countPhysicalRecords,
+  createPhysicalBookmark,
+  deletePhysicalRecord,
+  getPhysicalDatabase,
+  getPhysicalRecord,
+  insertPhysicalRecord,
+  listPhysicalRecords,
+  restorePhysicalBookmark,
+  updatePhysicalRecord,
+} from "./database-provisioner";
 import { ensureSchema } from "./db";
+import { recordServiceEvent } from "./observability";
 import type {
   AppBackup,
   AppManifest,
@@ -119,6 +131,8 @@ export async function listAppRecords(projectId: string, session: VerifiedAppSess
   if (!schema) throw new AppPlatformError("这个集合没有在应用 Schema 中声明", 404);
   const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
   const privileged = canManage(session.actor.role);
+  const physical = await getPhysicalDatabase(projectId);
+  if (physical) return listPhysicalRecords(physical, collectionName, session.actor.id, schema.access === "owner" && !privileged, boundedLimit);
   const result = schema.access === "owner" && !privileged
     ? await database().prepare(`SELECT * FROM app_records WHERE project_id=? AND collection=? AND owner_subject=? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`).bind(projectId, collectionName, session.actor.id, boundedLimit).all<D1Row>()
     : await database().prepare(`SELECT * FROM app_records WHERE project_id=? AND collection=? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`).bind(projectId, collectionName, boundedLimit).all<D1Row>();
@@ -133,6 +147,12 @@ export async function createAppRecord(projectId: string, session: VerifiedAppSes
   const data = validateRecordData(schema, input, null);
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
+  const physical = await getPhysicalDatabase(projectId);
+  if (physical) {
+    const record = await insertPhysicalRecord(physical, collectionName, session.actor.id, data);
+    await recordUsage(projectId, null, "database_write", 1, "records");
+    return record;
+  }
   await database().prepare(`INSERT INTO app_records (id,project_id,collection,owner_subject,data_json,revision,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)`).bind(id, projectId, collectionName, session.actor.id, JSON.stringify(data), now, now).run();
   await recordUsage(projectId, null, "database_write", 1, "records");
   return { id, projectId, collection: collectionName, ownerSubject: session.actor.id, data, revision: 1, createdAt: now, updatedAt: now };
@@ -143,15 +163,26 @@ export async function updateAppRecord(projectId: string, session: VerifiedAppSes
   const manifest = await requireManifest(projectId);
   const schema = collectionSchema(manifest, collectionName);
   if (!schema) throw new AppPlatformError("这个集合没有在应用 Schema 中声明", 404);
-  const current = await database().prepare(`SELECT * FROM app_records WHERE id=? AND project_id=? AND collection=? AND deleted_at IS NULL`).bind(recordId, projectId, collectionName).first<D1Row>();
+  const physical = await getPhysicalDatabase(projectId);
+  const physicalCurrent = physical ? await getPhysicalRecord(physical, collectionName, recordId) : null;
+  const current = physical ? physicalCurrent : await database().prepare(`SELECT * FROM app_records WHERE id=? AND project_id=? AND collection=? AND deleted_at IS NULL`).bind(recordId, projectId, collectionName).first<D1Row>();
   if (!current) throw new AppPlatformError("记录不存在", 404);
-  if (!canManage(session.actor.role) && String(current.owner_subject) !== session.actor.id) throw new AppPlatformError("不能修改其他用户的数据", 403);
+  const ownerSubject = physicalCurrent ? physicalCurrent.ownerSubject : String((current as D1Row).owner_subject);
+  if (!canManage(session.actor.role) && ownerSubject !== session.actor.id) throw new AppPlatformError("不能修改其他用户的数据", 403);
   const raw = objectValue(input);
-  const expectedRevision = typeof raw._revision === "number" ? Math.floor(raw._revision) : Number(current.revision);
-  if (expectedRevision !== Number(current.revision)) throw new AppPlatformError("数据已经被其他操作更新，请刷新后重试", 409);
+  const currentRevision = physicalCurrent ? physicalCurrent.revision : Number((current as D1Row).revision);
+  const expectedRevision = typeof raw._revision === "number" ? Math.floor(raw._revision) : currentRevision;
+  if (expectedRevision !== currentRevision) throw new AppPlatformError("数据已经被其他操作更新，请刷新后重试", 409);
   const patch = { ...raw };
   delete patch._revision;
-  const data = validateRecordData(schema, patch, parseJson<Record<string, unknown>>(current.data_json, {}));
+  const currentData = physicalCurrent ? physicalCurrent.data : parseJson<Record<string, unknown>>((current as D1Row).data_json, {});
+  const data = validateRecordData(schema, patch, currentData);
+  if (physical) {
+    const updated = await updatePhysicalRecord(physical, collectionName, recordId, expectedRevision, data);
+    if (!updated) throw new AppPlatformError("数据并发更新冲突，请刷新后重试", 409);
+    await recordUsage(projectId, null, "database_write", 1, "records");
+    return updated;
+  }
   const now = new Date().toISOString();
   const updated = await database().prepare(`UPDATE app_records SET data_json=?,revision=revision+1,updated_at=? WHERE id=? AND project_id=? AND revision=? RETURNING *`).bind(JSON.stringify(data), now, recordId, projectId, expectedRevision).first<D1Row>();
   if (!updated) throw new AppPlatformError("数据并发更新冲突，请刷新后重试", 409);
@@ -161,6 +192,15 @@ export async function updateAppRecord(projectId: string, session: VerifiedAppSes
 
 export async function deleteAppRecord(projectId: string, session: VerifiedAppSession, collectionName: string, recordId: string): Promise<void> {
   assertWritable(session);
+  const physical = await getPhysicalDatabase(projectId);
+  if (physical) {
+    const current = await getPhysicalRecord(physical, collectionName, recordId);
+    if (!current) throw new AppPlatformError("记录不存在", 404);
+    if (!canManage(session.actor.role) && current.ownerSubject !== session.actor.id) throw new AppPlatformError("不能删除其他用户的数据", 403);
+    if (!await deletePhysicalRecord(physical, collectionName, recordId, canManage(session.actor.role) ? null : session.actor.id)) throw new AppPlatformError("记录不存在或已经删除", 404);
+    await recordUsage(projectId, null, "database_write", 1, "records");
+    return;
+  }
   const current = await database().prepare(`SELECT owner_subject FROM app_records WHERE id=? AND project_id=? AND collection=? AND deleted_at IS NULL`).bind(recordId, projectId, collectionName).first<D1Row>();
   if (!current) throw new AppPlatformError("记录不存在", 404);
   if (!canManage(session.actor.role) && String(current.owner_subject) !== session.actor.id) throw new AppPlatformError("不能删除其他用户的数据", 403);
@@ -184,6 +224,7 @@ export async function recordRuntimeEvidence(input: {
   const message = input.message.trim().slice(0, 2_000) || "运行时事件";
   await database().prepare(`INSERT INTO runtime_evidence (id,project_id,version_id,session_id,source,level,message,evidence_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).bind(id, input.projectId, input.versionId ?? null, input.sessionId ?? null, input.source, input.level, message, JSON.stringify(evidence), now).run();
   await database().prepare(`DELETE FROM runtime_evidence WHERE project_id=? AND id NOT IN (SELECT id FROM runtime_evidence WHERE project_id=? ORDER BY created_at DESC LIMIT 500)`).bind(input.projectId, input.projectId).run();
+  await recordServiceEvent({ projectId: input.projectId, service: "generated-runtime", operation: input.source, level: input.level, message, detail: evidence }).catch(() => undefined);
   return { id, projectId: input.projectId, versionId: input.versionId ?? null, source: input.source, level: input.level, message, evidence, createdAt: now };
 }
 
@@ -223,6 +264,18 @@ export async function claimBrowserRunnerRepair(projectId: string): Promise<Runti
 
 export async function createAppBackup(projectId: string, actorId: string, label = "手动备份"): Promise<AppBackup> {
   await ensureSchema();
+  const physical = await getPhysicalDatabase(projectId);
+  if (physical) {
+    const bookmark = await createPhysicalBookmark(physical);
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const safeLabel = label.trim().slice(0, 120) || "手动备份";
+    const recordCount = await countPhysicalRecords(physical);
+    const snapshot = JSON.stringify({ provider: "cloudflare-d1-time-travel", externalDatabaseId: physical.externalDatabaseId, bookmark });
+    await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,created_at) VALUES (?,?,?,?,?,?,?)`).bind(id, projectId, safeLabel, snapshot, recordCount, actorId, now).run();
+    await recordServiceEvent({ projectId, service: "database", operation: "backup.time-travel", level: "info", message: "Cloudflare D1 Time Travel 书签已创建", detail: { recordCount, backupId: id } }).catch(() => undefined);
+    return { id, projectId, label: safeLabel, recordCount, createdBy: actorId, createdAt: now, provider: "cloudflare-d1-time-travel", status: "ready", bookmark };
+  }
   const result = await database().prepare(`SELECT * FROM app_records WHERE project_id=? AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 5000`).bind(projectId).all<D1Row>();
   const records = (result.results ?? []).map(recordFromRow);
   const snapshot = JSON.stringify(records);
@@ -231,19 +284,32 @@ export async function createAppBackup(projectId: string, actorId: string, label 
   const now = new Date().toISOString();
   const safeLabel = label.trim().slice(0, 120) || "手动备份";
   await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,created_at) VALUES (?,?,?,?,?,?,?)`).bind(id, projectId, safeLabel, snapshot, records.length, actorId, now).run();
+  await recordServiceEvent({ projectId, service: "database", operation: "backup.snapshot", level: "info", message: "逻辑 D1 快照已创建", detail: { recordCount: records.length, backupId: id } }).catch(() => undefined);
   return { id, projectId, label: safeLabel, recordCount: records.length, createdBy: actorId, createdAt: now };
 }
 
 export async function listAppBackups(projectId: string): Promise<AppBackup[]> {
   await ensureSchema();
-  const result = await database().prepare(`SELECT id,project_id,label,record_count,created_by,created_at FROM app_backups WHERE project_id=? ORDER BY created_at DESC LIMIT 30`).bind(projectId).all<D1Row>();
-  return (result.results ?? []).map((row) => ({ id: String(row.id), projectId: String(row.project_id), label: String(row.label), recordCount: Number(row.record_count), createdBy: String(row.created_by), createdAt: String(row.created_at) }));
+  const result = await database().prepare(`SELECT id,project_id,label,snapshot_json,record_count,created_by,created_at FROM app_backups WHERE project_id=? ORDER BY created_at DESC LIMIT 30`).bind(projectId).all<D1Row>();
+  return (result.results ?? []).map((row) => {
+    const snapshot = parseJson<{ provider?: string; bookmark?: string }>(row.snapshot_json, {});
+    const physical = snapshot.provider === "cloudflare-d1-time-travel";
+    return { id: String(row.id), projectId: String(row.project_id), label: String(row.label), recordCount: Number(row.record_count), createdBy: String(row.created_by), createdAt: String(row.created_at), provider: physical ? "cloudflare-d1-time-travel" : "snapshot", status: "ready", bookmark: physical ? snapshot.bookmark ?? null : null };
+  });
 }
 
 export async function restoreAppBackup(projectId: string, backupId: string, actorId: string): Promise<AppBackup> {
   await ensureSchema();
   const backup = await database().prepare(`SELECT * FROM app_backups WHERE id=? AND project_id=?`).bind(backupId, projectId).first<D1Row>();
   if (!backup) throw new AppPlatformError("备份不存在", 404);
+  const physicalSnapshot = parseJson<{ provider?: string; bookmark?: string }>(backup.snapshot_json, {});
+  if (physicalSnapshot.provider === "cloudflare-d1-time-travel") {
+    const physical = await getPhysicalDatabase(projectId);
+    if (!physical || !physicalSnapshot.bookmark) throw new AppPlatformError("物理数据库或 Time Travel 书签不可用", 409);
+    await createAppBackup(projectId, actorId, `恢复前自动备份 ${new Date().toLocaleString("zh-CN")}`);
+    await restorePhysicalBookmark(physical, physicalSnapshot.bookmark);
+    return createAppBackup(projectId, actorId, `已恢复：${String(backup.label)}`);
+  }
   await createAppBackup(projectId, actorId, `恢复前自动备份 ${new Date().toLocaleString("zh-CN")}`);
   const records = parseJson<AppRecord[]>(backup.snapshot_json, []);
   const d1 = database();
@@ -257,14 +323,40 @@ export async function restoreAppBackup(projectId: string, backupId: string, acto
   return createAppBackup(projectId, actorId, `已恢复：${String(backup.label)}`);
 }
 
+export async function runDueAppBackups(limit = 20): Promise<{ completed: string[]; failed: Array<{ projectId: string; error: string }> }> {
+  await ensureSchema();
+  const due = await database().prepare(`SELECT p.* FROM backup_policies p JOIN projects project ON project.id=p.project_id WHERE p.enabled=1 AND (p.next_run_at IS NULL OR p.next_run_at<=?) ORDER BY COALESCE(p.next_run_at,p.created_at) ASC LIMIT ?`).bind(new Date().toISOString(), Math.max(1, Math.min(100, limit))).all<D1Row>();
+  const completed: string[] = [];
+  const failed: Array<{ projectId: string; error: string }> = [];
+  for (const row of due.results ?? []) {
+    const projectId = String(row.project_id);
+    const intervalHours = Math.max(1, Math.min(168, Number(row.interval_hours ?? 24)));
+    try {
+      await createAppBackup(projectId, "system:scheduled-backup", `定时备份 ${new Date().toLocaleString("zh-CN")}`);
+      const now = new Date();
+      await database().prepare(`UPDATE backup_policies SET last_run_at=?,next_run_at=?,updated_at=? WHERE project_id=?`).bind(now.toISOString(), new Date(now.getTime() + intervalHours * 3_600_000).toISOString(), now.toISOString(), projectId).run();
+      const retentionDays = Math.max(1, Math.min(365, Number(row.retention_days ?? 30)));
+      await database().prepare(`DELETE FROM app_backups WHERE project_id=? AND created_at<? AND created_by='system:scheduled-backup'`).bind(projectId, new Date(Date.now() - retentionDays * 86_400_000).toISOString()).run();
+      completed.push(projectId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "定时备份失败";
+      await database().prepare(`UPDATE backup_policies SET next_run_at=?,updated_at=? WHERE project_id=?`).bind(new Date(Date.now() + 60 * 60_000).toISOString(), new Date().toISOString(), projectId).run();
+      await recordServiceEvent({ projectId, service: "database", operation: "backup.scheduled", level: "error", message, detail: { retryInMinutes: 60 } }).catch(() => undefined);
+      failed.push({ projectId, error: message });
+    }
+  }
+  return { completed, failed };
+}
+
 export async function createRunnerJob(input: { projectId: string; versionId: string | null; kind: RunnerJob["kind"]; request: Record<string, unknown>; provider?: string }): Promise<RunnerJob> {
   await ensureSchema();
   const runtime = env as unknown as Record<string, unknown>;
+  const githubRunnerReady = Boolean(runtime.GITHUB_AUTOMATION_TOKEN || (runtime.GITHUB_RUNNER_INSTALLATION_ID && runtime.GITHUB_APP_ID && runtime.GITHUB_APP_PRIVATE_KEY));
   const configured = input.kind === "playwright"
-    ? Boolean(runtime.GITHUB_AUTOMATION_TOKEN && runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN && runtime.GITHUB_RUNNER_REPOSITORY)
+    ? Boolean(githubRunnerReady && runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN && runtime.GITHUB_RUNNER_REPOSITORY)
     : input.kind === "container-build"
       ? Boolean(runtime.NUCLEUS_CONTAINER_RUNNER_URL && runtime.NUCLEUS_CONTAINER_RUNNER_TOKEN && runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN)
-      : Boolean(runtime.GITHUB_AUTOMATION_TOKEN);
+      : githubRunnerReady;
   const status: RunnerJob["status"] = configured ? "queued" : "configuration-required";
   const now = new Date().toISOString();
   const job: RunnerJob = {
@@ -294,6 +386,7 @@ export async function completeRunnerJob(jobId: string, status: "passed" | "faile
   await ensureSchema();
   const now = new Date().toISOString();
   const row = await database().prepare(`UPDATE runner_jobs SET status=?,result_json=?,completed_at=?,started_at=COALESCE(started_at,?) WHERE id=? RETURNING *`).bind(status, JSON.stringify(boundedJsonObject(result, 120_000)), now, now, jobId).first<D1Row>();
+  if (row) await recordServiceEvent({ projectId: String(row.project_id), service: "runner", operation: String(row.kind), level: status === "failed" ? "error" : "info", message: status === "failed" ? "外部 Runner 验收失败" : "外部 Runner 验收通过", detail: boundedJsonObject(result, 32_000) }).catch(() => undefined);
   return row ? runnerJobFromRow(row) : null;
 }
 
@@ -306,6 +399,7 @@ export async function markRunnerJobRunning(jobId: string): Promise<RunnerJob | n
 
 export async function runtimePlatformStats(projectId: string): Promise<{ records: number; sessions: number; errors: number; backups: number; runnerJobs: number; usageTokens: number }> {
   await ensureSchema();
+  const physical = await getPhysicalDatabase(projectId);
   const [records, sessions, errors, backups, jobs, tokens] = await database().batch([
     database().prepare(`SELECT COUNT(*) AS count FROM app_records WHERE project_id=? AND deleted_at IS NULL`).bind(projectId),
     database().prepare(`SELECT COUNT(*) AS count FROM app_sessions WHERE project_id=? AND expires_at>?`).bind(projectId, new Date().toISOString()),
@@ -315,7 +409,7 @@ export async function runtimePlatformStats(projectId: string): Promise<{ records
     database().prepare(`SELECT COALESCE(SUM(quantity),0) AS count FROM usage_events WHERE project_id=? AND kind='model_tokens'`).bind(projectId),
   ]);
   const count = (result: D1Result<unknown>) => Number((result.results?.[0] as { count?: number } | undefined)?.count ?? 0);
-  return { records: count(records), sessions: count(sessions), errors: count(errors), backups: count(backups), runnerJobs: count(jobs), usageTokens: count(tokens) };
+  return { records: physical ? await countPhysicalRecords(physical) : count(records), sessions: count(sessions), errors: count(errors), backups: count(backups), runnerJobs: count(jobs), usageTokens: count(tokens) };
 }
 
 async function requireManifest(projectId: string): Promise<AppManifest> {

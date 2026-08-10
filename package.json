@@ -13,6 +13,9 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "eval:fixed": "vitest run lib/app-manifest.eval.test.ts",
+    "eval:product": "vitest run lib/app-manifest.eval.test.ts lib/product-eval.test.ts lib/sandbox-policy.test.ts",
+    "test:security": "vitest run lib/sandbox-policy.test.ts",
+    "test:load": "node scripts/load-test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .artifacts",
     "db:generate": "drizzle-kit generate"
   },

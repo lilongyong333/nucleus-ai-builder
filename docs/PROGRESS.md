@@ -356,3 +356,23 @@ Production      passed
 - `docs/learning/15-race-visual-runner-git.md`；
 - `docs/learning/16-team-operations-observability.md`；
 - `docs/learning/17-p2-p3-deployment-acceptance.md`。
+
+## 第十三轮：商业控制面基础与最终 GitHub 交付
+
+- 新增可选物理 D1 Provisioner，覆盖创建、Schema Migration、资源状态、Time Travel 书签、保留期删除与审计；默认逻辑 D1 路径保持兼容；
+- 新增 GitHub App 安装/OAuth state 校验、安装归属验证、RSA JWT 和短期 Installation Token；
+- 新增 Stripe Checkout、Billing Portal、原始请求体 HMAC Webhook、事件幂等与 Meter Usage 导出；
+- 新增邮件通知 Provider、生产维护端点与 GitHub Actions 定时触发、服务事件和 SLO 评估；
+- 新增固定产品/安全 Eval 与只读并发负载测试脚本，并补强移动端工作台布局；
+- 所有外部商业 Provider 均采用显式配置状态：仓库包含可执行集成代码，但未配置真实凭据时不会声称已经开通对应云服务。
+
+### 最终本地交付门
+
+- Vitest：201/201；
+- 固定产品与安全 Eval：155/155；
+- Chromium Playwright：7/7；
+- TypeScript：通过；
+- ESLint：通过；
+- Drizzle schema/migration consistency：通过；
+- Vinext production build：通过；
+- `git diff --check` 与通用密钥扫描：通过。

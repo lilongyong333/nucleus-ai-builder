@@ -43,6 +43,10 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 - 组织成员、RBAC、发布审批、Token/模型调用/数据库写入用量控制
 - GitHub Iris/Bob/Alex/Ray 分支自动化与合并 Provider
 - GitHub Actions Playwright 和外部 npm/pip/system/container Runner 协议；缺少凭据时明确显示 `configuration-required`
+- 可选的每应用物理 D1 Provisioner：创建、Schema Migration、Time Travel 书签、延迟删除与审计事件
+- GitHub App 安装/OAuth 绑定与短期 Installation Token，保留手动 Provider 作为兼容路径
+- Stripe Checkout、Billing Portal、签名 Webhook、幂等事件与用量 Meter 导出骨架
+- 邮件通知 Provider、生产维护定时任务、服务事件/SLO 评估、只读负载测试与固定安全 Eval
 
 ## 技术栈
 
@@ -81,9 +85,11 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 ```bash
 pnpm test
+pnpm eval:product
 pnpm test:e2e
 pnpm lint
 pnpm exec tsc --noEmit
+pnpm exec drizzle-kit check
 pnpm build
 ```
 
@@ -110,7 +116,7 @@ pnpm build
 
 默认生成物仍是无构建步骤的浏览器三文件应用，但现在每个正式版本同时拥有 AppManifest、运行时 API、项目命名空间 Schema、Auth、日志与备份。这样既保留秒级预览与 sandbox 安全边界，又让生成应用的数据在刷新和跨会话后真实存在。
 
-Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker。npm、pip、系统包、Node/Python/Java 容器由受限的外部 Runner Provider 执行；仓库已经实现任务、权限、限额、回调和审计协议，但没有附带托管容器集群。D1 隔离是严格的每项目逻辑命名空间，不是每应用动态创建一个物理 D1 实例。外部 Provider 未配置时产品会显示 `configuration-required`，不会用假成功掩盖边界。
+Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker。npm、pip、系统包、Node/Python/Java 容器由受限的外部 Runner Provider 执行；仓库已经实现任务、权限、限额、回调和审计协议，但没有附带托管容器集群。默认数据库仍是严格的每项目逻辑 D1 命名空间；配置 Cloudflare API Provider 后，可为项目创建独立物理 D1、执行 Schema Migration、管理 Time Travel 书签并延迟删除。GitHub App、Stripe、邮件、物理 D1 与外部 Runner 未配置真实凭据时会显示 `configuration-required`，不会用假成功掩盖边界。
 
 ## 文档
 

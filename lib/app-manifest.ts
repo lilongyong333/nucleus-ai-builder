@@ -9,6 +9,7 @@ import type {
 } from "./types";
 
 const NAME_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+const RESERVED_FIELD_NAMES = new Set(["id", "owner_subject", "revision", "deleted_at", "created_at", "updated_at"]);
 const FIELD_TYPES = new Set<RuntimeFieldType>(["string", "number", "boolean", "date", "json"]);
 const ACCESS_MODES = new Set<AppCollectionSchema["access"]>(["owner", "public-read", "public-write"]);
 
@@ -112,6 +113,10 @@ export function buildAppManifest(input: {
   browserRunnerReady?: boolean;
   containerRunnerReady?: boolean;
   gitAutomationReady?: boolean;
+  databaseProvisionerReady?: boolean;
+  emailReady?: boolean;
+  billingReady?: boolean;
+  observabilityReady?: boolean;
 }): AppManifest {
   const requiresExternalRunner = input.blueprint.dependencies.pip.length > 0
     || input.blueprint.dependencies.system.length > 0
@@ -152,6 +157,10 @@ export function buildAppManifest(input: {
       browserRunner: input.browserRunnerReady ? "ready" : "configuration-required",
       containers: input.containerRunnerReady ? "ready" : "configuration-required",
       gitAutomation: input.gitAutomationReady ? "ready" : "configuration-required",
+      physicalDatabase: input.databaseProvisionerReady ? "provisioning" : "configuration-required",
+      email: input.emailReady ? "ready" : "configuration-required",
+      billing: input.billingReady ? "ready" : "configuration-required",
+      observability: input.observabilityReady ? "ready" : "configuration-required",
     },
   };
 }
@@ -193,7 +202,7 @@ function normalizeCollection(value: unknown): AppCollectionSchema | null {
 function normalizeField(value: unknown): AppCollectionField | null {
   const raw = objectValue(value);
   const name = safeName(raw.name);
-  if (!name) return null;
+  if (!name || RESERVED_FIELD_NAMES.has(name)) return null;
   const type = FIELD_TYPES.has(raw.type as RuntimeFieldType) ? raw.type as RuntimeFieldType : "string";
   const maxLength = typeof raw.maxLength === "number" && Number.isFinite(raw.maxLength)
     ? Math.max(1, Math.min(32_000, Math.floor(raw.maxLength)))

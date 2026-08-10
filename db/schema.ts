@@ -276,8 +276,136 @@ export const gitIntegrations = sqliteTable("git_integrations", {
   repositoryOwner: text("repository_owner").notNull(),
   repositoryName: text("repository_name").notNull(),
   defaultBranch: text("default_branch").notNull().default("main"),
+  installationId: text("installation_id"),
   status: text("status").notNull(),
   lastSyncJson: text("last_sync_json"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const appDatabaseResources = sqliteTable("app_database_resources", {
+  projectId: text("project_id").primaryKey(),
+  provider: text("provider").notNull().default("cloudflare-d1"),
+  isolation: text("isolation").notNull().default("physical-database"),
+  status: text("status").notNull().default("pending"),
+  externalDatabaseId: text("external_database_id"),
+  databaseName: text("database_name").notNull(),
+  locationHint: text("location_hint"),
+  schemaVersion: integer("schema_version").notNull().default(0),
+  lastMigrationAt: text("last_migration_at"),
+  lastBackupAt: text("last_backup_at"),
+  retentionUntil: text("retention_until"),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_app_database_resources_external").on(table.externalDatabaseId),
+  index("idx_app_database_resources_status_updated").on(table.status, table.updatedAt),
+]);
+
+export const provisioningEvents = sqliteTable("provisioning_events", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  operation: text("operation").notNull(),
+  status: text("status").notNull(),
+  provider: text("provider").notNull(),
+  detailJson: text("detail_json").notNull(),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+}, (table) => [index("idx_provisioning_events_project_started").on(table.projectId, table.startedAt)]);
+
+export const backupPolicies = sqliteTable("backup_policies", {
+  projectId: text("project_id").primaryKey(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  intervalHours: integer("interval_hours").notNull().default(24),
+  retentionDays: integer("retention_days").notNull().default(30),
+  lastRunAt: text("last_run_at"),
+  nextRunAt: text("next_run_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const githubAppInstallations = sqliteTable("github_app_installations", {
+  installationId: text("installation_id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  accountLogin: text("account_login"),
+  accountType: text("account_type"),
+  permissionsJson: text("permissions_json").notNull().default("{}"),
+  repositorySelection: text("repository_selection"),
+  status: text("status").notNull().default("active"),
+  suspendedAt: text("suspended_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_github_app_installations_owner").on(table.ownerId, table.updatedAt)]);
+
+export const oauthStates = sqliteTable("oauth_states", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  provider: text("provider").notNull(),
+  stateHash: text("state_hash").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  consumedAt: text("consumed_at"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_oauth_states_hash").on(table.stateHash),
+  index("idx_oauth_states_expiry").on(table.expiresAt),
+]);
+
+export const notificationDeliveries = sqliteTable("notification_deliveries", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id"),
+  projectId: text("project_id"),
+  kind: text("kind").notNull(),
+  channel: text("channel").notNull(),
+  recipient: text("recipient").notNull(),
+  status: text("status").notNull(),
+  provider: text("provider").notNull(),
+  providerMessageId: text("provider_message_id"),
+  error: text("error"),
+  createdAt: text("created_at").notNull(),
+  deliveredAt: text("delivered_at"),
+}, (table) => [index("idx_notification_deliveries_project_created").on(table.projectId, table.createdAt)]);
+
+export const billingAccounts = sqliteTable("billing_accounts", {
+  organizationId: text("organization_id").primaryKey(),
+  provider: text("provider").notNull().default("stripe"),
+  customerId: text("customer_id"),
+  subscriptionId: text("subscription_id"),
+  status: text("status").notNull().default("configuration-required"),
+  plan: text("plan").notNull().default("demo"),
+  currentPeriodEnd: text("current_period_end"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [uniqueIndex("uq_billing_accounts_customer").on(table.customerId)]);
+
+export const billingEvents = sqliteTable("billing_events", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id"),
+  providerEventId: text("provider_event_id"),
+  kind: text("kind").notNull(),
+  status: text("status").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  processedAt: text("processed_at"),
+}, (table) => [
+  uniqueIndex("uq_billing_events_provider_event").on(table.providerEventId),
+  index("idx_billing_events_org_created").on(table.organizationId, table.createdAt),
+]);
+
+export const serviceEvents = sqliteTable("service_events", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  organizationId: text("organization_id"),
+  service: text("service").notNull(),
+  operation: text("operation").notNull(),
+  level: text("level").notNull(),
+  durationMs: integer("duration_ms"),
+  statusCode: integer("status_code"),
+  message: text("message").notNull(),
+  detailJson: text("detail_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  index("idx_service_events_project_created").on(table.projectId, table.createdAt),
+  index("idx_service_events_level_created").on(table.level, table.createdAt),
+]);

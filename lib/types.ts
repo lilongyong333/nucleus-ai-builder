@@ -52,8 +52,8 @@ export type AppManifest = {
     functions: AppBackendFunction[];
   };
   database: {
-    provider: "nucleus-d1";
-    isolation: "project-namespace";
+    provider: "nucleus-d1" | "cloudflare-d1";
+    isolation: "project-namespace" | "physical-database";
     collections: AppCollectionSchema[];
   };
   auth: {
@@ -76,7 +76,50 @@ export type AppManifest = {
     browserRunner: "ready" | "configuration-required";
     containers: "ready" | "configuration-required";
     gitAutomation: "ready" | "configuration-required";
+    physicalDatabase: "ready" | "provisioning" | "configuration-required" | "error";
+    email: "ready" | "configuration-required";
+    billing: "ready" | "configuration-required";
+    observability: "ready" | "configuration-required";
   };
+};
+
+export type AppDatabaseResource = {
+  projectId: string;
+  provider: "cloudflare-d1";
+  isolation: "physical-database";
+  status: "pending" | "provisioning" | "ready" | "error" | "configuration-required" | "deletion-scheduled" | "deleted";
+  externalDatabaseId: string | null;
+  databaseName: string;
+  locationHint: string | null;
+  schemaVersion: number;
+  lastMigrationAt: string | null;
+  lastBackupAt: string | null;
+  retentionUntil: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProvisioningEvent = {
+  id: string;
+  projectId: string;
+  operation: "create" | "migrate" | "backup" | "restore" | "schedule-delete" | "delete";
+  status: "running" | "completed" | "failed" | "configuration-required";
+  provider: "cloudflare-d1";
+  detail: Record<string, unknown>;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type BackupPolicy = {
+  projectId: string;
+  enabled: boolean;
+  intervalHours: number;
+  retentionDays: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AppRuntimeActor = {
@@ -124,6 +167,9 @@ export type AppBackup = {
   recordCount: number;
   createdBy: string;
   createdAt: string;
+  provider?: "snapshot" | "cloudflare-d1-time-travel";
+  status?: "ready" | "failed";
+  bookmark?: string | null;
 };
 
 export type RunnerJob = {
@@ -188,9 +234,55 @@ export type GitIntegration = {
   repositoryName: string;
   defaultBranch: string;
   status: "connected" | "configuration-required" | "error";
+  installationId?: string | null;
   lastSync: GitSyncResult | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type GitHubAppInstallation = {
+  installationId: string;
+  accountLogin: string | null;
+  accountType: string | null;
+  repositorySelection: string | null;
+  status: "active" | "suspended" | "revoked";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NotificationDelivery = {
+  id: string;
+  kind: string;
+  channel: "email";
+  recipient: string;
+  status: "sent" | "failed" | "configuration-required";
+  provider: "resend";
+  providerMessageId: string | null;
+  error: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+};
+
+export type BillingAccount = {
+  organizationId: string;
+  provider: "stripe";
+  customerId: string | null;
+  subscriptionId: string | null;
+  status: "configuration-required" | "checkout-open" | "incomplete" | "trialing" | "active" | "past_due" | "unpaid" | "paused" | "canceled";
+  plan: "demo" | "team" | "enterprise";
+  currentPeriodEnd: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OperationalSummary = {
+  windowMinutes: number;
+  total: number;
+  errors: number;
+  errorRate: number;
+  p95DurationMs: number | null;
+  slo: { target: number; healthy: boolean };
+  alerting: "ready" | "configuration-required";
 };
 
 export type GitSyncResult = {

@@ -40,7 +40,16 @@ async function prepareSchema(): Promise<void> {
     d1.prepare(`CREATE TABLE IF NOT EXISTS organization_members (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, subject_id TEXT NOT NULL, email TEXT, role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS project_approvals (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT NOT NULL, status TEXT NOT NULL, requested_by TEXT NOT NULL, reviewed_by TEXT, comment TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS usage_events (id TEXT PRIMARY KEY, organization_id TEXT, project_id TEXT NOT NULL, run_id TEXT, kind TEXT NOT NULL, quantity INTEGER NOT NULL, unit TEXT NOT NULL, model TEXT, created_at TEXT NOT NULL)`),
-    d1.prepare(`CREATE TABLE IF NOT EXISTS git_integrations (project_id TEXT PRIMARY KEY, provider TEXT NOT NULL, repository_owner TEXT NOT NULL, repository_name TEXT NOT NULL, default_branch TEXT NOT NULL DEFAULT 'main', status TEXT NOT NULL, last_sync_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS git_integrations (project_id TEXT PRIMARY KEY, provider TEXT NOT NULL, repository_owner TEXT NOT NULL, repository_name TEXT NOT NULL, default_branch TEXT NOT NULL DEFAULT 'main', installation_id TEXT, status TEXT NOT NULL, last_sync_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS app_database_resources (project_id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'cloudflare-d1', isolation TEXT NOT NULL DEFAULT 'physical-database', status TEXT NOT NULL DEFAULT 'pending', external_database_id TEXT, database_name TEXT NOT NULL, location_hint TEXT, schema_version INTEGER NOT NULL DEFAULT 0, last_migration_at TEXT, last_backup_at TEXT, retention_until TEXT, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS provisioning_events (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, provider TEXT NOT NULL, detail_json TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS backup_policies (project_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, interval_hours INTEGER NOT NULL DEFAULT 24, retention_days INTEGER NOT NULL DEFAULT 30, last_run_at TEXT, next_run_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS github_app_installations (installation_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, account_login TEXT, account_type TEXT, permissions_json TEXT NOT NULL DEFAULT '{}', repository_selection TEXT, status TEXT NOT NULL DEFAULT 'active', suspended_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS oauth_states (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, provider TEXT NOT NULL, state_hash TEXT NOT NULL, payload_json TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT, created_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS notification_deliveries (id TEXT PRIMARY KEY, organization_id TEXT, project_id TEXT, kind TEXT NOT NULL, channel TEXT NOT NULL, recipient TEXT NOT NULL, status TEXT NOT NULL, provider TEXT NOT NULL, provider_message_id TEXT, error TEXT, created_at TEXT NOT NULL, delivered_at TEXT)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS billing_accounts (organization_id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'stripe', customer_id TEXT, subscription_id TEXT, status TEXT NOT NULL DEFAULT 'configuration-required', plan TEXT NOT NULL DEFAULT 'demo', current_period_end TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS billing_events (id TEXT PRIMARY KEY, organization_id TEXT, provider_event_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, processed_at TEXT)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS service_events (id TEXT PRIMARY KEY, project_id TEXT, organization_id TEXT, service TEXT NOT NULL, operation TEXT NOT NULL, level TEXT NOT NULL, duration_ms INTEGER, status_code INTEGER, message TEXT NOT NULL, detail_json TEXT NOT NULL, created_at TEXT NOT NULL)`),
   ]);
 
   const info = await d1.prepare(`PRAGMA table_info(projects)`).all<{ name: string }>();
@@ -101,6 +110,14 @@ async function prepareSchema(): Promise<void> {
       if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
     }
   }
+  const gitInfo = await d1.prepare(`PRAGMA table_info(git_integrations)`).all<{ name: string }>();
+  if (!(gitInfo.results ?? []).some((column) => column.name === "installation_id")) {
+    try {
+      await d1.prepare(`ALTER TABLE git_integrations ADD COLUMN installation_id TEXT`).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+    }
+  }
   await d1.prepare(`UPDATE projects SET published_version_id=current_version_id WHERE slug IS NOT NULL AND current_version_id IS NOT NULL AND published_version_id IS NULL`).run();
   await d1.batch([
     d1.prepare(`CREATE INDEX IF NOT EXISTS idx_versions_project_created ON versions(project_id, created_at)`),
@@ -131,6 +148,18 @@ async function prepareSchema(): Promise<void> {
     d1.prepare(`CREATE INDEX IF NOT EXISTS idx_organization_members_email ON organization_members(email)`),
     d1.prepare(`CREATE INDEX IF NOT EXISTS idx_project_approvals_project_created ON project_approvals(project_id, created_at)`),
     d1.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_events_project_created ON usage_events(project_id, created_at)`),
+    d1.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS uq_app_database_resources_external ON app_database_resources(external_database_id)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_app_database_resources_status_updated ON app_database_resources(status, updated_at)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_provisioning_events_project_started ON provisioning_events(project_id, started_at)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_github_app_installations_owner ON github_app_installations(owner_id, updated_at)`),
+    d1.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS uq_oauth_states_hash ON oauth_states(state_hash)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_notification_deliveries_project_created ON notification_deliveries(project_id, created_at)`),
+    d1.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_accounts_customer ON billing_accounts(customer_id)`),
+    d1.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_events_provider_event ON billing_events(provider_event_id)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_billing_events_org_created ON billing_events(organization_id, created_at)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_service_events_project_created ON service_events(project_id, created_at)`),
+    d1.prepare(`CREATE INDEX IF NOT EXISTS idx_service_events_level_created ON service_events(level, created_at)`),
   ]);
   await d1.prepare(`PRAGMA optimize`).run();
 }
@@ -558,15 +587,22 @@ export async function saveGeneration(id: string, ownerId: string, generationId: 
   const versionId = crypto.randomUUID();
   const now = new Date().toISOString();
   const runtime = env as unknown as Record<string, unknown>;
+  const githubAppReady = Boolean(runtime.GITHUB_APP_ID && runtime.GITHUB_APP_CLIENT_ID && runtime.GITHUB_APP_CLIENT_SECRET && runtime.GITHUB_APP_PRIVATE_KEY);
+  const databaseProvisionerReady = Boolean(runtime.CLOUDFLARE_ACCOUNT_ID && runtime.CLOUDFLARE_D1_API_TOKEN);
+  const physicalDatabaseName = `nucleus-${id.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || versionId.slice(0, 12)}`.slice(0, 62);
   const manifest = buildAppManifest({
     projectId: id,
     versionId,
     plan,
     blueprint: blueprint ?? defaultRuntimeBlueprint(plan.summary, plan),
     createdAt: now,
-    browserRunnerReady: Boolean(runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN && runtime.GITHUB_AUTOMATION_TOKEN),
+    browserRunnerReady: Boolean(runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN && runtime.GITHUB_RUNNER_REPOSITORY && (runtime.GITHUB_AUTOMATION_TOKEN || githubAppReady)),
     containerRunnerReady: Boolean(runtime.NUCLEUS_CONTAINER_RUNNER_URL && runtime.NUCLEUS_CONTAINER_RUNNER_TOKEN),
-    gitAutomationReady: Boolean(runtime.GITHUB_AUTOMATION_TOKEN),
+    gitAutomationReady: Boolean(runtime.GITHUB_AUTOMATION_TOKEN || githubAppReady),
+    databaseProvisionerReady,
+    emailReady: Boolean(runtime.RESEND_API_KEY && runtime.NUCLEUS_EMAIL_FROM),
+    billingReady: Boolean(runtime.STRIPE_SECRET_KEY && runtime.STRIPE_WEBHOOK_SECRET),
+    observabilityReady: Boolean(runtime.NUCLEUS_ALERT_WEBHOOK_URL || runtime.SENTRY_DSN),
   });
   const results = await db().batch([
     db().prepare(`INSERT INTO versions (id,project_id,version_number,files_json,summary,model,quality_json,manifest_json,created_at) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM projects p WHERE p.id=? AND ${PROJECT_EDIT_ACCESS_P} AND p.generation_id=?) AND EXISTS (SELECT 1 FROM generation_runs WHERE id=? AND project_id=? AND status='running')`).bind(versionId, id, versionNumber, JSON.stringify(files), summary, model, JSON.stringify(quality), JSON.stringify(manifest), now, id, ownerId, ownerId, generationId, generationId, id),
@@ -574,6 +610,8 @@ export async function saveGeneration(id: string, ownerId: string, generationId: 
     db().prepare(`UPDATE projects SET title=?, status='ready', plan_json=?, files_json=?, current_version_id=?, generation_id=NULL, generation_started_at=NULL, updated_at=? WHERE id=? AND ${PROJECT_EDIT_ACCESS} AND generation_id=? AND EXISTS (SELECT 1 FROM generation_runs WHERE id=? AND project_id=? AND status='running')`).bind(plan.appName, JSON.stringify(plan), JSON.stringify(files), versionId, now, id, ownerId, ownerId, generationId, generationId, id),
     db().prepare(`UPDATE generation_runs SET status='completed', current_stage='completed', active_step=NULL, step_started_at=NULL, completed_at=?, duration_ms=?, prompt_tokens=?, completion_tokens=?, total_tokens=?, model_calls=?, repair_count=?, model=?, version_id=?, error=NULL WHERE id=? AND project_id=? AND status='running'`).bind(now, metrics.durationMs, metrics.usage.promptTokens, metrics.usage.completionTokens, metrics.usage.totalTokens, metrics.modelCalls, metrics.repairCount, metrics.model, versionId, generationId, id),
     db().prepare(`INSERT INTO app_manifests (project_id,version_id,manifest_json,schema_version,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET version_id=excluded.version_id,manifest_json=excluded.manifest_json,schema_version=excluded.schema_version,status='active',updated_at=excluded.updated_at`).bind(id, versionId, JSON.stringify(manifest), manifest.schemaVersion, "active", now, now),
+    db().prepare(`INSERT INTO app_database_resources (project_id,provider,isolation,status,external_database_id,database_name,location_hint,schema_version,last_migration_at,last_backup_at,retention_until,last_error,created_at,updated_at) VALUES (?,'cloudflare-d1','physical-database',?,NULL,?,?,0,NULL,NULL,NULL,?, ?,?) ON CONFLICT(project_id) DO UPDATE SET status=CASE WHEN app_database_resources.status='ready' THEN 'ready' ELSE excluded.status END,database_name=excluded.database_name,location_hint=excluded.location_hint,last_error=CASE WHEN app_database_resources.status='ready' THEN NULL ELSE excluded.last_error END,updated_at=excluded.updated_at`).bind(id, databaseProvisionerReady ? "pending" : "configuration-required", physicalDatabaseName, typeof runtime.NUCLEUS_D1_LOCATION_HINT === "string" ? runtime.NUCLEUS_D1_LOCATION_HINT : null, databaseProvisionerReady ? null : "缺少 Cloudflare D1 Provisioner 凭据", now, now),
+    db().prepare(`INSERT INTO backup_policies (project_id,enabled,interval_hours,retention_days,last_run_at,next_run_at,created_at,updated_at) VALUES (?,1,24,30,NULL,?,?,?) ON CONFLICT(project_id) DO NOTHING`).bind(id, new Date(Date.now() + 86_400_000).toISOString(), now, now),
     db().prepare(`INSERT INTO usage_events (id,organization_id,project_id,run_id,kind,quantity,unit,model,created_at) SELECT ?,organization_id,?,?,?,?,?,?,? FROM projects WHERE id=?`).bind(crypto.randomUUID(), id, generationId, "model_tokens", metrics.usage.totalTokens, "tokens", metrics.model, now, id),
     db().prepare(`INSERT INTO usage_events (id,organization_id,project_id,run_id,kind,quantity,unit,model,created_at) SELECT ?,organization_id,?,?,?,?,?,?,? FROM projects WHERE id=?`).bind(crypto.randomUUID(), id, generationId, "model_calls", metrics.modelCalls, "calls", metrics.model, now, id),
   ]);

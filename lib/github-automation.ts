@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "./db";
+import { createInstallationAccessToken, findInstallationForRepository, githubAppConfigured } from "./github-app";
 import type { AgentName, GitIntegration, GitSyncResult, GenerationArtifactKind } from "./types";
 
 type D1Row = Record<string, string | number | null>;
@@ -17,7 +18,7 @@ function database(): D1Database {
   return binding;
 }
 
-function token(): string | null {
+function personalAccessToken(): string | null {
   const value = (env as unknown as Record<string, unknown>).GITHUB_AUTOMATION_TOKEN ?? process.env.GITHUB_AUTOMATION_TOKEN;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -28,14 +29,15 @@ export async function getGitIntegration(projectId: string): Promise<GitIntegrati
   return row ? integrationFromRow(row) : null;
 }
 
-export async function configureGitIntegration(projectId: string, input: { repositoryOwner: string; repositoryName: string; defaultBranch?: string }): Promise<GitIntegration> {
+export async function configureGitIntegration(projectId: string, ownerId: string, input: { repositoryOwner: string; repositoryName: string; defaultBranch?: string }): Promise<GitIntegration> {
   await ensureSchema();
   const repositoryOwner = safeSegment(input.repositoryOwner, "仓库所有者");
   const repositoryName = safeSegment(input.repositoryName.replace(/\.git$/i, ""), "仓库名称");
   const defaultBranch = safeBranch(input.defaultBranch ?? "main");
   const now = new Date().toISOString();
-  const status = token() ? "connected" : "configuration-required";
-  await database().prepare(`INSERT INTO git_integrations (project_id,provider,repository_owner,repository_name,default_branch,status,last_sync_json,created_at,updated_at) VALUES (?,'github',?,?,?,?,NULL,?,?) ON CONFLICT(project_id) DO UPDATE SET repository_owner=excluded.repository_owner,repository_name=excluded.repository_name,default_branch=excluded.default_branch,status=excluded.status,updated_at=excluded.updated_at`).bind(projectId, repositoryOwner, repositoryName, defaultBranch, status, now, now).run();
+  const installation = await findInstallationForRepository(ownerId, repositoryOwner);
+  const status = personalAccessToken() || installation ? "connected" : "configuration-required";
+  await database().prepare(`INSERT INTO git_integrations (project_id,provider,repository_owner,repository_name,default_branch,installation_id,status,last_sync_json,created_at,updated_at) VALUES (?,'github',?,?,?,?,?,NULL,?,?) ON CONFLICT(project_id) DO UPDATE SET repository_owner=excluded.repository_owner,repository_name=excluded.repository_name,default_branch=excluded.default_branch,installation_id=excluded.installation_id,status=excluded.status,updated_at=excluded.updated_at`).bind(projectId, repositoryOwner, repositoryName, defaultBranch, installation?.installationId ?? null, status, now, now).run();
   return (await getGitIntegration(projectId))!;
 }
 
@@ -43,8 +45,8 @@ export async function syncAgentBranches(projectId: string, runId: string): Promi
   await ensureSchema();
   const integration = await getGitIntegration(projectId);
   if (!integration) throw new GitAutomationError("请先连接 GitHub 仓库", 409);
-  const automationToken = token();
-  if (!automationToken) throw new GitAutomationError("GitHub Provider 协议已就绪，但生产环境未配置 GITHUB_AUTOMATION_TOKEN", 409);
+  const automationToken = personalAccessToken() ?? (integration.installationId ? await createInstallationAccessToken(integration.installationId) : null);
+  if (!automationToken) throw new GitAutomationError(githubAppConfigured() ? "请先安装 GitHub App，并将仓库重新连接到对应 Installation" : "GitHub App 尚未配置；兼容模式也没有服务端 PAT", 409);
   const artifactRows = await database().prepare(`SELECT agent,kind,content FROM generation_artifacts WHERE project_id=? AND run_id=? ORDER BY created_at ASC`).bind(projectId, runId).all<D1Row>();
   if (!(artifactRows.results ?? []).length) throw new GitAutomationError("这个 Run 没有可同步工件", 404);
   const artifacts = new Map((artifactRows.results ?? []).map((row) => [String(row.kind) as GenerationArtifactKind, String(row.content)]));
@@ -143,6 +145,7 @@ function integrationFromRow(row: D1Row): GitIntegration {
     repositoryOwner: String(row.repository_owner),
     repositoryName: String(row.repository_name),
     defaultBranch: String(row.default_branch),
+    installationId: row.installation_id ? String(row.installation_id) : null,
     status: String(row.status) as GitIntegration["status"],
     lastSync: parseJson<GitSyncResult | null>(row.last_sync_json, null),
     createdAt: String(row.created_at),
