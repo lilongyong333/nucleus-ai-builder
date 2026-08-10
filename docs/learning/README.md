@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** 可恢复多 Agent 状态机与 P2/P3 全栈控制面已经完成本地发布门；70 个 Vitest、25 项固定 Manifest Eval、7 个 Chromium E2E、ESLint、TypeScript 和生产构建全部通过。Sites production version、Git commit 和线上真实证据会在正式发布后写入 `docs/PROGRESS.md`，不要用旧文档中的历史 version 判断线上是否最新。
+> **当前验证基线：** 最终 GitHub commit `b14e81e00d23865640fe318c9ef81abcd82bcf24` 已完成 201 个 Vitest、155 项固定产品/安全 Eval、7 个 Chromium E2E、ESLint、TypeScript、Drizzle 一致性、生产构建和 GitHub Actions。`www.llynb.cc` 仍是上一版稳定部署，代码能力与线上启用状态必须分开判断。
 
 ## 先看结论
 
@@ -66,7 +66,10 @@ nucleus/
 │     ├─ runs/[id]/step/route.ts        每次执行一个 Agent 阶段
 │     ├─ generate/route.ts              旧单请求兼容接口
 │     ├─ session/route.ts               当前登录/游客身份
-│     └─ projects/...                   项目、恢复、发布接口
+│     ├─ projects/...                   项目、恢复、发布、数据库接口
+│     ├─ billing/...                    Stripe Checkout、Portal 与 Webhook
+│     ├─ github/app/...                 GitHub App 安装与 OAuth 回调
+│     └─ maintenance/run                定时维护和 SLO 任务
 ├─ components/
 │  ├─ workbench.tsx                    工作台核心交互
 │  ├─ account-dashboard.tsx             项目与成品详细链接
@@ -80,6 +83,10 @@ nucleus/
 │  ├─ quality.ts                       Acorn + 通用/应用类型质量门
 │  ├─ runtime.ts                       iframe 组装、storage shim、启动/错误桥
 │  ├─ db.ts                            D1 租约、阶段、工件、模型尝试、版本与限流
+│  ├─ database-provisioner.ts           可选物理 D1 创建、迁移、备份和删除
+│  ├─ github-app.ts / billing.ts        GitHub App 与 Stripe 控制面
+│  ├─ observability.ts                  服务事件、SLO 与告警
+│  ├─ sandbox-policy.ts                 容器依赖和镜像安全策略
 │  └─ types.ts                         前后端共享类型
 ├─ db/schema.ts                        Drizzle 数据模型
 ├─ drizzle/                            SQL migration
@@ -142,4 +149,4 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 - 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A；
 - 首页四个固定成品链接均返回 200；
 - Sign in with ChatGPT 后，账号中心展示项目、版本、对话、工作台链接和公开成品链接；
-- 本地发布门为 `pnpm test` 34/34、`pnpm test:e2e` 7/7、TypeScript、ESLint、生产构建全部通过；正式部署后的 commit、Sites version、GitHub CI 和线上真实贪吃蛇运行数据见 `docs/PROGRESS.md`。
+- 最终本地发布门为 `pnpm test` 201/201、`pnpm eval:product` 155/155、`pnpm test:e2e` 7/7、TypeScript、ESLint、Drizzle 一致性和生产构建全部通过；GitHub Actions 同样通过。线上真实贪吃蛇运行数据与历史 Sites version 见 `docs/PROGRESS.md`。

@@ -129,6 +129,7 @@ Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker
 - [与 MetaGPT / Atoms 的差距分析与优化路线](docs/METAGPT-GAP-ANALYSIS.md)
 - [开发进度与验收记录](docs/PROGRESS.md)
 - [提交说明](docs/SUBMISSION.md)
+- [可直接发送给 HR 的笔试说明 PDF](output/pdf/Nucleus-ROOT-Fullstack-Written-Test-Li-Longyong.pdf)
 - [后续开发计划](docs/DEV-PLAN.md)
 - [第三方说明](THIRD_PARTY_NOTICES.md)
 
