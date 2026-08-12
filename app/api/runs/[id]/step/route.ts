@@ -7,6 +7,7 @@ import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, AgentName, AgentPlan, AppQualityReport, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
 import { scheduleProjectDatabaseProvisioning } from "@/lib/background-tasks";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 
 export const maxDuration = 300;
 
@@ -40,20 +41,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const encoder = new TextEncoder();
   const abortController = new AbortController();
-  request.signal.addEventListener("abort", () => abortController.abort(new DOMException("Browser connection closed", "AbortError")), { once: true });
+  // A browser tab, mobile network, or reverse proxy may drop the stream while
+  // the provider is still producing a valid file. The durable Run owns the
+  // model call; losing the live view must not cancel that server-side work.
+  let streamClosed = false;
   const stream = new ReadableStream({
     start(controller) {
-      void (async () => {
+      const work = (async () => {
         // Model code streams are I/O-bound and receive an eight-second
         // heartbeat below. Give a complete file enough time to close its
         // artifact fence; the model gateway still enforces finite call/token
         // budgets and retains a fallback window.
         const deadline = setTimeout(() => abortController.abort(new DOMException("Stage deadline exceeded", "TimeoutError")), 245_000);
         const heartbeat = setInterval(() => {
-          if (!abortController.signal.aborted) controller.enqueue(encoder.encode("\n"));
+          if (!abortController.signal.aborted && !streamClosed) controller.enqueue(encoder.encode("\n"));
         }, 8_000);
         const emit = (event: AgentEvent) => {
-          if (!abortController.signal.aborted) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          if (!abortController.signal.aborted && !streamClosed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         };
         const auditFrom = (event: Awaited<ReturnType<typeof recordNextGenerationEvent>>): AgentAudit => ({
           runId: event.runId,
@@ -211,12 +215,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           clearInterval(heartbeat);
           clearTimeout(deadline);
           await releaseGenerationStep(runId, stepToken).catch(() => undefined);
-          if (!abortController.signal.aborted) controller.close();
+          if (!abortController.signal.aborted && !streamClosed) controller.close();
         }
       })();
+      const context = getRequestExecutionContext();
+      if (context) context.waitUntil(work);
+      else void work;
     },
     cancel() {
-      abortController.abort(new DOMException("Browser cancelled the stage stream", "AbortError"));
+      streamClosed = true;
     },
   });
   return withWorkspaceIdentity(new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } }), identity);

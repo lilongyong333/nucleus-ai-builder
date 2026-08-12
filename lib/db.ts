@@ -537,7 +537,11 @@ export async function acquireGenerationStep(projectId: string, ownerId: string, 
   await ensureSchema();
   const token = crypto.randomUUID();
   const now = new Date().toISOString();
-  const staleBefore = new Date(Date.now() - 70_000).toISOString();
+  // A code/review step may legitimately run for about 245 seconds. Reclaiming
+  // after 70 seconds allowed a reconnecting browser to start the same model
+  // stage concurrently. Keep the lease longer than the route deadline; the
+  // normal finally path still releases it immediately on completion.
+  const staleBefore = new Date(Date.now() - 5 * 60_000).toISOString();
   const acquired = await db().prepare(`UPDATE generation_runs SET active_step=?,step_started_at=?,error=NULL WHERE id=? AND project_id=? AND status='running' AND (active_step IS NULL OR step_started_at IS NULL OR step_started_at<?) AND EXISTS (SELECT 1 FROM projects p WHERE p.id=? AND ${PROJECT_EDIT_ACCESS_P} AND p.generation_id=? AND p.status='generating') RETURNING id`).bind(token, now, runId, projectId, staleBefore, projectId, ownerId, ownerId, runId).first<{ id: string }>();
   if (!acquired) return null;
   await db().prepare(`UPDATE projects SET generation_started_at=?,updated_at=? WHERE id=? AND ${PROJECT_EDIT_ACCESS} AND generation_id=?`).bind(now, now, projectId, ownerId, ownerId, runId).run();
