@@ -3,7 +3,7 @@ import { artifactProtocolViolation, canonicalFileResponsibilities, normalizeArti
 
 describe("three-file artifact protocol", () => {
   it("keeps Bob's responsibilities immutable", () => {
-    expect(canonicalFileResponsibilities["index.html"]).toContain("禁止内联");
+    expect(canonicalFileResponsibilities["index.html"]).toContain("平台会注入");
     expect(canonicalFileResponsibilities["styles.css"]).toContain("独立 CSS");
     expect(canonicalFileResponsibilities["script.js"]).toContain("独立原生 JavaScript");
   });
@@ -20,10 +20,16 @@ describe("three-file artifact protocol", () => {
   });
 
   it("removes redundant local file references before enforcing isolation", () => {
-    const normalized = normalizeArtifactContent("index.html", "<!doctype html><html><head><link rel='stylesheet' href='./styles.css'></head><body><main></main><script defer src='script.js'></script></body></html>");
+    const normalized = normalizeArtifactContent("index.html", "<!doctype html><html><head><link rel='stylesheet' href='./style.css'></head><body><main></main><script defer src='app.js'></script></body></html>");
     expect(normalized).not.toContain("styles.css");
-    expect(normalized).not.toContain("script.js");
+    expect(normalized).not.toContain("style.css");
+    expect(normalized).not.toContain("app.js");
     expect(artifactProtocolViolation("index.html", normalized)).toBeNull();
+  });
+
+  it("does not silently remove remote dependencies before the self-contained quality gate", () => {
+    const source = "<!doctype html><html><head><link rel='stylesheet' href='https://example.com/theme.css'></head><body><main></main><script src='https://example.com/app.js'></script></body></html>";
+    expect(normalizeArtifactContent("index.html", source)).toBe(source);
   });
 
   it("rejects truncated CSS and JavaScript before checkpointing", () => {

@@ -2,7 +2,7 @@ import { parse } from "acorn";
 import type { GeneratedFiles } from "./types";
 
 export const canonicalFileResponsibilities: Record<keyof GeneratedFiles, string> = {
-  "index.html": "完整语义 HTML、应用容器、Canvas 与可访问控件；禁止内联 <style> 或 <script>，不得实现 CSS 或 JavaScript。",
+  "index.html": "完整语义 HTML、应用容器、Canvas 与可访问控件；不得包含 <style>、<script> 或样式表 <link>，平台会注入 styles.css 与 script.js。",
   "styles.css": "完整独立 CSS；负责产品级视觉、响应式布局、交互状态与可见焦点，不得包含 HTML 或 JavaScript。",
   "script.js": "完整独立原生 JavaScript；负责状态机、业务规则、交互、持久化与错误处理，不得包含 HTML 或 CSS。",
 };
@@ -10,8 +10,11 @@ export const canonicalFileResponsibilities: Record<keyof GeneratedFiles, string>
 export function normalizeArtifactContent(path: keyof GeneratedFiles, content: string): string {
   if (path !== "index.html") return content.trim();
   return content
-    .replace(/<link\b(?=[^>]*\bhref\s*=\s*["'](?:\.\/)?styles\.css(?:\?[^"']*)?["'])[^>]*>\s*/gi, "")
-    .replace(/<script\b(?=[^>]*\bsrc\s*=\s*["'](?:\.\/)?script\.js(?:\?[^"']*)?["'])[^>]*>\s*<\/script\s*>\s*/gi, "")
+    // The preview/runtime owns file assembly. Models often add app.js or
+    // style.css out of habit; relative local references are redundant and may
+    // point at a filename that does not exist in the three-file protocol.
+    .replace(/<link\b(?=[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'])(?=[^>]*\bhref\s*=\s*["'](?!https?:|\/\/|data:)[^"']+\.css(?:\?[^"']*)?["'])[^>]*>\s*/gi, "")
+    .replace(/<script\b(?=[^>]*\bsrc\s*=\s*["'](?!https?:|\/\/|data:)[^"']+\.js(?:\?[^"']*)?["'])[^>]*>\s*<\/script\s*>\s*/gi, "")
     .trim();
 }
 
