@@ -62,6 +62,31 @@ function hasRiskyRuntimeNode(root: Node): boolean {
   return risky;
 }
 
+function duplicateFunctionNames(root: Node): string[] {
+  const duplicates = new Set<string>();
+  const visit = (node: Node) => {
+    if (node.type === "Program" || node.type === "BlockStatement") {
+      const body = (node as Node & { body?: unknown }).body;
+      if (Array.isArray(body)) {
+        const seen = new Set<string>();
+        for (const statement of body.filter(isNode)) {
+          if (statement.type !== "FunctionDeclaration") continue;
+          const name = identifierName((statement as Node & { id?: unknown }).id);
+          if (!name) continue;
+          if (seen.has(name)) duplicates.add(name);
+          seen.add(name);
+        }
+      }
+    }
+    for (const child of Object.values(node as unknown as Record<string, unknown>)) {
+      if (isNode(child)) visit(child);
+      else if (Array.isArray(child)) child.filter(isNode).forEach(visit);
+    }
+  };
+  visit(root);
+  return [...duplicates].sort();
+}
+
 export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
   const html = files["index.html"];
   const css = files["styles.css"];
@@ -82,6 +107,17 @@ export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
     passDetail: "脚本通过 ECMAScript 语法解析",
     failDetail: `脚本存在语法错误：${syntaxError}`,
     weight: 24,
+    blocking: true,
+  }));
+
+  const duplicateFunctions = syntaxTree ? duplicateFunctionNames(syntaxTree) : [];
+  checks.push(makeCheck({
+    id: "function-uniqueness",
+    label: "函数声明唯一性",
+    passed: duplicateFunctions.length === 0,
+    passDetail: "同一作用域内没有重复函数声明",
+    failDetail: `同一作用域存在重复函数声明：${duplicateFunctions.join("、")}；后声明会覆盖前声明并导致运行错误`,
+    weight: 0,
     blocking: true,
   }));
 
@@ -170,8 +206,11 @@ export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
     weight: 2,
   }));
 
-  const score = checks.reduce((total, check) => total + (check.severity === "pass" ? check.weight : 0), 0);
   const blockingIssues = checks.filter((check) => check.severity === "error");
+  const rawScore = checks.reduce((total, check) => total + (check.severity === "pass" ? check.weight : 0), 0);
+  // A blocking runtime/safety defect must never be presented as 100/A merely
+  // because its dedicated contract has zero scoring weight.
+  const score = blockingIssues.length > 0 ? Math.min(rawScore, 69) : rawScore;
   const passed = blockingIssues.length === 0 && score >= 75;
   return {
     score,

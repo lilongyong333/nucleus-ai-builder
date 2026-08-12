@@ -5,7 +5,7 @@ import { AgentOutputError, createStepBudget, deterministicBobResult, determinist
 import { normalizeGeneratedFiles } from "@/lib/runtime";
 import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
-import type { AgentAudit, AgentEvent, AgentName, AgentPlan, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
+import type { AgentAudit, AgentEvent, AgentName, AgentPlan, AppQualityReport, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
 import { scheduleProjectDatabaseProvisioning } from "@/lib/background-tasks";
 
 export const maxDuration = 300;
@@ -147,7 +147,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             await persistResult(runId, projectId, "Ray", stage, result);
             await recordRecovery(runId, projectId, "Ray", stage, result, emit);
             const artifact = await saveGenerationArtifact(runId, projectId, "Ray", "quality", JSON.stringify(result.artifact));
-            emit({ type: "review", report: result.artifact.deterministic });
+            emit({ type: "review", report: displayQualityReport(result.artifact) });
             emit({ type: "artifact", artifact });
             if (!result.artifact.passed && run.repairCount >= 2) throw new TerminalWorkflowError(`Ray 在 ${run.repairCount} 轮修复后仍发现阻断问题：${result.artifact.issues.filter((issue) => issue.severity === "error").map((issue) => issue.detail).join("；").slice(0, 500)}`);
             const next = result.artifact.passed ? "finalize" : "repair";
@@ -290,6 +290,25 @@ function filesFromArtifacts(artifacts: Map<GenerationArtifactKind, GenerationArt
     else if (requireAll) throw new TerminalWorkflowError(`缺少 ${path} 工件`);
   }
   return files;
+}
+
+function displayQualityReport(review: RayReviewArtifact): AppQualityReport {
+  const issueChecks = review.issues.map((issue, index) => ({
+    id: `ray-model-${index + 1}`,
+    label: `Ray 模型审查 ${index + 1}`,
+    severity: issue.severity,
+    detail: issue.detail,
+    weight: 0,
+  }));
+  const checks = [...review.deterministic.checks, ...review.productChecks, ...issueChecks];
+  return {
+    ...review.deterministic,
+    passed: review.passed,
+    score: review.passed ? review.deterministic.score : Math.min(review.deterministic.score, 69),
+    grade: review.passed ? review.deterministic.grade : "D",
+    checks,
+    summary: review.summary,
+  };
 }
 
 function normalizeStage(stage: GenerationStage, artifacts: Map<GenerationArtifactKind, GenerationArtifact>): GenerationStage {

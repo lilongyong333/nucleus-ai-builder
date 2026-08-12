@@ -37,6 +37,14 @@ type PlatformState = {
   operations: OperationalSummary;
 };
 type RuntimeFailure = { message: string; detail: Record<string, unknown>; versionId: string | null };
+
+function compactRuntimeEvidence(detail: Record<string, unknown>): Record<string, unknown> {
+  const dom = detail.dom;
+  if (!dom || typeof dom !== "object" || Array.isArray(dom)) return detail;
+  const summary = { ...(dom as Record<string, unknown>) };
+  delete summary.html;
+  return { ...detail, dom: summary };
+}
 type SpeechRecognitionLike = {
   lang: string;
   continuous: boolean;
@@ -751,7 +759,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     if (autoRepairVersionsRef.current.has(versionKey)) return;
     autoRepairVersionsRef.current.add(versionKey);
     const timer = window.setTimeout(() => {
-      const evidence = JSON.stringify(runtimeFailure.detail).slice(0, 8_000);
+      const evidence = JSON.stringify(compactRuntimeEvidence(runtimeFailure.detail)).slice(0, 4_000);
       setRuntimeFailure(null);
       void runGenerate(`Ray 在真实预览启动时捕获到运行错误。请依据下面的运行证据修复，并保持所有已工作的功能：\n错误：${runtimeFailure.message}\n浏览器证据：${evidence}`);
     }, 900);
@@ -814,6 +822,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const latestRun = project.runs[0];
   const busy = generating || project.status === "generating";
   const hasSavedVersion = Boolean(project.currentVersionId);
+  const hasVerifiedVersion = hasSavedVersion && previewState === "passed";
   const workingFiles = runFiles(project.runs[0]);
   const codeFiles: Partial<GeneratedFiles> = hasSavedVersion ? project.files : workingFiles;
   const codePaths = Object.keys(codeFiles) as Array<keyof GeneratedFiles>;
@@ -834,7 +843,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     <main className={`workbench ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
       <header className="workbench-topbar">
         <div className="topbar-left"><a className="icon-button" href="/" aria-label="返回首页"><ArrowLeft size={18} /></a><a className="brand compact" href="/"><span className="brand-mark"><Boxes size={17} /></span><span>Nucleus</span></a><span className="top-divider" /><div className="project-title"><strong>{project.title}</strong><span className={`status-dot ${busy ? "busy" : project.status === "error" ? "failed" : ""}`} /> <small>{statusLabel}</small></div></div>
-        <div className="topbar-actions"><a href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></a><button onClick={() => setShowPlatform(true)}><Database size={16} /><span>全栈资源</span><b>{project.manifest ? project.manifest.database.collections.length : 0}</b></button><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()} disabled={!hasSavedVersion}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()} disabled={!hasSavedVersion}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
+        <div className="topbar-actions"><a href="/account" aria-label="账号项目中心"><UserRound size={16} /><span>账号</span></a><button onClick={() => setShowPlatform(true)}><Database size={16} /><span>全栈资源</span><b>{project.manifest ? project.manifest.database.collections.length : 0}</b></button><button onClick={() => setShowMemory(true)}><MessageSquareText size={16} /><span>对话</span><b>{project.messages.length}</b></button><button onClick={() => setShowVersions(true)}><History size={16} /> <span>版本</span><b>v{project.versions[0]?.versionNumber ?? 0}</b></button><button onClick={() => void download()} disabled={!hasVerifiedVersion} title={hasSavedVersion && !hasVerifiedVersion ? "真实预览启动通过后才可下载" : undefined}><Download size={16} /><span>下载</span></button>{project.slug && <a href={`/p/${project.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16} /><span>查看发布页</span></a>}<button className="primary-action" onClick={() => void publish()} disabled={!hasVerifiedVersion} title={hasSavedVersion && !hasVerifiedVersion ? "真实预览启动通过后才可发布" : undefined}><Share2 size={16} /><span>{project.slug ? "复制链接" : "发布"}</span></button></div>
       </header>
 
       <aside className="agent-panel">

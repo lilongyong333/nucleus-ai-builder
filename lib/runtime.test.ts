@@ -8,6 +8,8 @@ describe("preview runtime", () => {
     expect(html).toContain("<script>");
     expect(html).toContain("__nucleus_probe__");
     expect(html).toContain("type:'ready'");
+    expect(html).toContain("if(!window.__nucleusRuntimeFailed){parent.postMessage");
+    expect(html).toContain("queueEvent('info','应用启动完成',{ready:true");
     expect(html).toContain("type:'console'");
     expect(html).toContain("['log','info','warn','error']");
     expect(html).toContain("emitted<200");

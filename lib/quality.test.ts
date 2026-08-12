@@ -17,6 +17,18 @@ describe("generated app quality gate", () => {
     expect(qualityRepairBrief(report)).toContain("语法错误");
   });
 
+  it("blocks duplicate function declarations that silently overwrite a DOM helper", () => {
+    const report = reviewGeneratedApp({
+      ...starterFiles,
+      "script.js": `${starterFiles["script.js"]}\nfunction $(selector) { return document.querySelector(selector); }\nfunction $(selector) { return [...document.querySelectorAll(selector)]; }`,
+    });
+    expect(report.passed).toBe(false);
+    expect(report.checks.find((check) => check.id === "function-uniqueness")).toMatchObject({ severity: "error" });
+    expect(qualityRepairBrief(report)).toContain("重复函数声明");
+    expect(report.score).toBeLessThan(70);
+    expect(report.grade).toBe("D");
+  });
+
   it("blocks static mockups without real interaction", () => {
     const report = reviewGeneratedApp({
       "index.html": '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head><body><main><h1>Only a mockup</h1></main></body></html>',
