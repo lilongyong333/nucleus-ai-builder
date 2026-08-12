@@ -95,7 +95,10 @@ window.addEventListener('DOMContentLoaded',function(){setTimeout(function(){var 
 })();</script>`;
   const styleTag = `<style>${style}</style>`;
   const scriptTag = `<script>${script}</script>`;
-  html = html.includes("</head>") ? html.replace("</head>", `${styleTag}${runtime}</head>`) : `${styleTag}${runtime}${html}`;
-  html = html.includes("</body>") ? html.replace("</body>", `${scriptTag}</body>`) : `${html}${scriptTag}`;
+  // Use callback replacements. A replacement string interprets `$&`, `$'`,
+  // `$`` and `$$`; generated helpers such as `const $$ = ...` were silently
+  // rewritten to `const $ = ...` and only failed in the composed browser app.
+  html = html.includes("</head>") ? html.replace("</head>", () => `${styleTag}${runtime}</head>`) : `${styleTag}${runtime}${html}`;
+  html = html.includes("</body>") ? html.replace("</body>", () => `${scriptTag}</body>`) : `${html}${scriptTag}`;
   return html;
 }

@@ -21,6 +21,14 @@ describe("preview runtime", () => {
     expect(html).toContain("<\\/script>");
   });
 
+  it("preserves dollar-based selector helpers when composing the final document", () => {
+    const source = "const $ = (s) => document.querySelector(s); const $$ = (s) => document.querySelectorAll(s); const marker = '$&';";
+    const html = composePreview({ ...starterFiles, "script.js": source });
+    expect(html).toContain("const $ = (s)");
+    expect(html).toContain("const $$ = (s)");
+    expect(html).toContain("const marker = '$&'");
+  });
+
   it("rejects incomplete model output", () => {
     expect(() => normalizeGeneratedFiles({ "index.html": "<main />" })).toThrow("styles.css");
   });
