@@ -58,7 +58,10 @@ export function createStepBudget(remaining?: { maxCalls: number; maxTotalTokens:
   return createModelBudget({
     maxCalls: Math.min(configuredCalls, remaining?.maxCalls ?? configuredCalls),
     maxTotalTokens: Math.min(configuredTokens, remaining?.maxTotalTokens ?? configuredTokens),
-    maxDurationMs: runtimeInteger("OPENCODE_GO_STEP_MAX_DURATION_MS", 47_000, 10_000, 52_000),
+    // A generated CSS/JavaScript file regularly needs longer than the old
+    // 52-second window. The route emits heartbeats, so wall-clock I/O can stay
+    // open while the provider finishes without consuming unbounded CPU time.
+    maxDurationMs: runtimeInteger("OPENCODE_GO_STEP_MAX_DURATION_MS", 230_000, 10_000, 240_000),
   });
 }
 
@@ -79,8 +82,8 @@ type ChatOptions = { models?: string[]; requestTimeoutMs?: number; fallbackReser
 function codeChatOptions(): ChatOptions {
   return {
     models: activeCodeModels(),
-    requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 34_000, 8_000, 45_000),
-    fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 16_000, 5_000, 25_000),
+    requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 170_000, 8_000, 180_000),
+    fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 50_000, 5_000, 90_000),
   };
 }
 
@@ -257,12 +260,12 @@ export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: strin
     ? `Original request:\n${prompt}`
     : `Project goal:\n${plan.appName}: ${plan.summary}\nRequired features:\n${plan.features.map((feature) => `- ${feature}`).join("\n")}`;
   const pathRule = path === "index.html"
-    ? "Return complete semantic HTML and head metadata. Do not include inline style or script tags. Do not implement CSS or JavaScript in this response. Every visible primary control needs a stable id or data attribute."
+    ? "Return complete semantic HTML and head metadata. Do not include inline style or script tags. Do not implement CSS or JavaScript in this response. Every visible primary control needs a stable id or data attribute. Keep the file compact and normally under 7,000 characters."
     : path === "styles.css"
-      ? "Return complete responsive CSS only. Do not output HTML or JavaScript. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, polished empty/error/active states, and no external assets."
-      : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, and defensive DOM access. The platform injects window.nucleus.auth and async window.nucleus.data.list/create/update/remove; when Bob declares runtime collections, use that API for durable product records and reserve localStorage for device-local preferences or an offline fallback. No imports or external libraries.";
+      ? "Return complete responsive CSS only. Do not output HTML or JavaScript. Include desktop and mobile layouts, clear focus-visible states, reduced-motion support, and the required empty/error/active states. Prefer reusable selectors over decorative repetition; omit long comments and keep the file normally under 10,000 characters."
+      : "Return complete executable vanilla JavaScript only. Do not output HTML or CSS. Implement every acceptance criterion and interaction, robust state transitions, keyboard and touch behavior where relevant, and defensive DOM access. The platform injects window.nucleus.auth and async window.nucleus.data.list/create/update/remove; when Bob declares runtime collections, use that API for durable product records and reserve localStorage for device-local preferences or an offline fallback. No imports or external libraries. Prefer small reusable functions, omit long comments, and keep the file normally under 20,000 characters.";
   const result = await chat([
-    { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
+    { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Completeness is more important than ornamental volume: implement every required behavior, then close the code fence early instead of expanding optional decoration. Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
     { role: "user", content: `${requestContext}\n\nIris contract:\n${JSON.stringify(plan)}\n\nScoped Bob handoff for ${path}:\n${JSON.stringify(scopedArchitecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Other agents own the other files. Do not output or re-create any other path.` },
   ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, { ...codeChatOptions(), acceptIncomplete: (content) => isCompleteSingleFileArtifact(path, content), ...(agentOptions.models ? { models: agentOptions.models } : {}) });
   const content = normalizeArtifactContent(path, extractSingleFile(path, result.content));

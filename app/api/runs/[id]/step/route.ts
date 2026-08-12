@@ -8,7 +8,7 @@ import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, AgentName, AgentPlan, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
 import { scheduleProjectDatabaseProvisioning } from "@/lib/background-tasks";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 class TerminalWorkflowError extends Error {}
 
@@ -44,7 +44,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const stream = new ReadableStream({
     start(controller) {
       void (async () => {
-        const deadline = setTimeout(() => abortController.abort(new DOMException("Stage deadline exceeded", "TimeoutError")), 54_000);
+        // Model code streams are I/O-bound and receive an eight-second
+        // heartbeat below. Give a complete file enough time to close its
+        // artifact fence; the model gateway still enforces finite call/token
+        // budgets and retains a fallback window.
+        const deadline = setTimeout(() => abortController.abort(new DOMException("Stage deadline exceeded", "TimeoutError")), 245_000);
         const heartbeat = setInterval(() => {
           if (!abortController.signal.aborted) controller.enqueue(encoder.encode("\n"));
         }, 8_000);
