@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { qualityRepairBrief, reviewGeneratedApp, reviewProductContract } from "./quality";
+import { qualityIssuesFromChecks, qualityRepairBrief, requiredQualityIssueFiles, reviewGeneratedApp, reviewProductContract } from "./quality";
 import { starterFiles } from "./runtime";
 
 describe("generated app quality gate", () => {
@@ -27,6 +27,20 @@ describe("generated app quality gate", () => {
     expect(qualityRepairBrief(report)).toContain("重复函数声明");
     expect(report.score).toBeLessThan(70);
     expect(report.grade).toBe("D");
+    const issues = qualityIssuesFromChecks(report.checks);
+    expect(issues).toContainEqual(expect.objectContaining({ severity: "error", file: "script.js" }));
+    expect(requiredQualityIssueFiles(issues)).toEqual(["script.js"]);
+  });
+
+  it("maps deterministic failures to repairable files instead of a vague application issue", () => {
+    const issues = qualityIssuesFromChecks([
+      { id: "viewport", label: "viewport", severity: "error", detail: "missing", weight: 0 },
+      { id: "keyboard-focus", label: "focus", severity: "error", detail: "missing", weight: 0 },
+      { id: "real-interaction", label: "interaction", severity: "error", detail: "missing", weight: 0 },
+      { id: "typing-live-metrics", label: "typing", severity: "error", detail: "missing", weight: 0 },
+    ]);
+    expect(issues.map((issue) => issue.file)).toEqual(["index.html", "styles.css", "application", "script.js"]);
+    expect(requiredQualityIssueFiles(issues)).toEqual(["index.html", "styles.css", "script.js"]);
   });
 
   it("blocks static mockups without real interaction", () => {

@@ -5,7 +5,7 @@ import { artifactProtocolViolation, canonicalFileResponsibilities, normalizeArti
 import { createModelBudget, ModelGatewayError, requestChat, type ChatMessage, type GatewayChatResult, type ModelAttempt, type ModelBudget } from "./model-gateway";
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { planFromPrompt } from "./planner";
-import { qualityRepairBrief, reviewGeneratedApp, reviewProductContract } from "./quality";
+import { qualityIssuesFromChecks, qualityRepairBrief, requiredQualityIssueFiles, reviewGeneratedApp, reviewProductContract } from "./quality";
 import { isCompleteJsonArtifact, isCompleteRepairArtifact, isCompleteSingleFileArtifact, isCompleteThreeFileArtifact, parseStructuredJsonObject } from "./structured-output";
 import { addUsage, emptyUsage } from "./usage";
 import type { AgentName, AgentPlan, AppQualityCheck, AppQualityReport, AppRuntimeBlueprint, GeneratedFiles, ModelUsage } from "./types";
@@ -231,7 +231,7 @@ export function deterministicRayResult(prompt: string, plan: AgentPlan, files: G
     passed: deterministic.passed && productChecks.every((check) => check.severity !== "error"),
     summary: failedChecks.length ? `确定性审查发现 ${failedChecks.length} 个阻断问题` : `${deterministic.summary}；模型 Reviewer 不可用，采用保守确定性审查`,
     functionalChecks: (plan.acceptanceCriteria ?? plan.features).slice(0, 20).map((name) => ({ name, passed: failedChecks.length === 0, evidence: failedChecks.length ? "存在阻断性确定性检查，需进入修复" : "通用质量门及应用类型契约均已通过" })),
-    issues: failedChecks.map((check) => ({ severity: "error" as const, file: "application" as const, detail: check.detail })),
+    issues: qualityIssuesFromChecks([...deterministic.checks, ...productChecks]),
     deterministic,
     productChecks,
   }, reason);
@@ -327,11 +327,15 @@ export async function runRayReviewAgent(prompt: string, plan: AgentPlan, archite
     passed: item.passed !== false,
     evidence: stringValue(item.evidence, "已检查实现代码", 400),
   }));
-  const issues = arrayObjects(parsed.issues).slice(0, 16).map((item) => ({
+  const modelIssues = arrayObjects(parsed.issues).slice(0, 16).map((item) => ({
     severity: item.severity === "error" ? "error" as const : "warning" as const,
     file: (["index.html", "styles.css", "script.js"] as const).includes(item.file as keyof GeneratedFiles) ? item.file as keyof GeneratedFiles : "application" as const,
     detail: stringValue(item.detail, "需要人工复核", 500),
   }));
+  const groundedIssues = qualityIssuesFromChecks([...deterministic.checks, ...productChecks]);
+  const issues = [...groundedIssues, ...modelIssues].filter((issue, index, all) =>
+    all.findIndex((candidate) => candidate.file === issue.file && candidate.detail === issue.detail) === index,
+  ).slice(0, 24);
   const passed = deterministic.passed
     && productChecks.every((check) => check.severity !== "error")
     && parsed.passed !== false
@@ -349,9 +353,10 @@ export async function runRayReviewAgent(prompt: string, plan: AgentPlan, archite
 
 export async function runRayRepairAgent(prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, review: RayReviewArtifact, files: GeneratedFiles, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void): Promise<AgentModelResult<Partial<GeneratedFiles>>> {
   const startedAt = Date.now();
+  const requiredFiles = requiredQualityIssueFiles(review.issues);
   const result = await chat([
-    { role: "system", content: "You are Ray acting as the repair engineer. Fix every concrete error in the QA report while preserving working behavior. Return only the complete changed files as markdown code blocks with exact {path=index.html}, {path=styles.css}, or {path=script.js} opening-line metadata. Do not return unchanged files, explanations, summaries, or JSON. Never put markdown fences inside a file." },
-    { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nQA report:\n${JSON.stringify(review)}\n\nCurrent files:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
+    { role: "system", content: "You are Ray acting as the repair engineer. Fix every concrete error in the QA report while preserving working behavior. Every file named by an error must be returned as a complete changed file; do not substitute an unrelated file. Return only the complete changed files as markdown code blocks with exact {path=index.html}, {path=styles.css}, or {path=script.js} opening-line metadata. Do not return unchanged files, explanations, summaries, or JSON. Never put markdown fences inside a file." },
+    { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nQA report:\n${JSON.stringify(review)}\n\nMandatory changed files named by blocking evidence: ${requiredFiles.length ? requiredFiles.join(", ") : "none explicitly named; infer the minimum correct set"}\n\nCurrent files:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
   ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, { ...codeChatOptions(), acceptIncomplete: isCompleteRepairArtifact });
   const extracted = extractGeneratedFiles(result.content);
   if (Object.keys(extracted).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
@@ -361,6 +366,10 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
     const violation = artifactProtocolViolation(path, content);
     if (violation) throw new AgentOutputError(`Ray 修复工件无效：${violation}`, result);
     changed[path] = content;
+  }
+  const missingRequiredFiles = requiredFiles.filter((path) => !(path in changed));
+  if (missingRequiredFiles.length) {
+    throw new AgentOutputError(`Ray 没有返回阻断问题要求修复的文件：${missingRequiredFiles.join("、")}`, result);
   }
   return modelResult(changed, result, startedAt);
 }

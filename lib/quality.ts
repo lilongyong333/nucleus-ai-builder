@@ -335,3 +335,36 @@ export function qualityRepairBrief(report: AppQualityReport): string {
     .map((check) => `- ${check.label}: ${check.detail}`)
     .join("\n");
 }
+
+export type GroundedQualityIssue = {
+  severity: "error";
+  file: keyof GeneratedFiles | "application";
+  detail: string;
+};
+
+/**
+ * Preserve the exact deterministic failure and point Ray at the file that can
+ * actually fix it. Without this bridge the model reviewer can correctly fail
+ * a run while the repair agent receives only a vague application-level issue.
+ */
+export function qualityIssuesFromChecks(checks: AppQualityCheck[]): GroundedQualityIssue[] {
+  return checks
+    .filter((check) => check.severity === "error")
+    .map((check) => ({
+      severity: "error" as const,
+      file: qualityCheckFile(check.id),
+      detail: check.detail,
+    }));
+}
+
+export function requiredQualityIssueFiles(issues: Array<{ severity: "warning" | "error"; file: keyof GeneratedFiles | "application" }>): Array<keyof GeneratedFiles> {
+  return [...new Set(issues.flatMap((issue) => issue.severity === "error" && issue.file !== "application" ? [issue.file] : []))];
+}
+
+function qualityCheckFile(checkId: string): keyof GeneratedFiles | "application" {
+  if (["javascript-syntax", "function-uniqueness", "runtime-safety"].includes(checkId)) return "script.js";
+  if (["semantic-html", "viewport", "accessible-names", "self-contained"].includes(checkId)) return "index.html";
+  if (["responsive-css", "keyboard-focus"].includes(checkId)) return "styles.css";
+  if (checkId.startsWith("snake-") || checkId.startsWith("typing-")) return "script.js";
+  return "application";
+}
