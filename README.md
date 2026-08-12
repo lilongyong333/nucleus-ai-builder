@@ -15,9 +15,10 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 ## 已实现功能
 
 - 一句话创建 HTML / CSS / JavaScript 三文件应用
-- OpenCode Go 真实调用：规划/审查默认 `gpt-5.6-luna`，代码默认 `glm-5.2`，两条路由互为受控回退
-- Iris 使用确定性本地 SOP 产出结构化计划；正常新建只需一次代码模型调用
-- 单次请求超时与整轮调用/Token/时间预算，最终实际模型写入审计
+- OpenCode Go 真实调用：Iris 需求、Bob 架构、Alex 三文件开发、Ray 审查分别执行，规划/代码模型双向受控回退
+- 完整 JSON/代码工件在 Provider 缺失流终止事件时可经结构验证安全救回；明确长度截断继续拒绝
+- Iris/Bob/Ray Provider 或解析故障可形成带审计的保守确定性工件；Alex 真实代码与最终质量门不能跳过
+- 单次请求超时、阶段预算与整轮调用/Token 总预算分离，最终尝试状态和真实错误写入审计
 - 智能体工作时间线和结构化产品计划
 - sandbox iframe 中的可交互实时预览、启动校验和运行错误回传
 - 桌面 / 手机预览切换和源码查看
@@ -51,6 +52,7 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 - Runner 双重认证、五分钟 HMAC 防重放、终态不可重复提交，以及依赖投毒/元数据 SSRF/容器 Socket 防护
 - 触屏 DOM 选择与移动端底部可视化编辑器；支持文字、尺寸、间距、Display 和 Grid 局部修改
 - 240 个固定语义用例、多类型产品/安全 Eval、真实浏览器 E2E，以及支持多 Cookie 用户池和显式写场景的负载测试
+- 贪吃蛇与中文打字速度测试拥有专项功能契约，阻止“视觉像成品但核心循环不可用”的静态假 Demo
 
 ## 技术栈
 
@@ -78,8 +80,10 @@ pnpm dev
 ```dotenv
 OPENCODE_GO_API_KEY=
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=glm-5.2
-OPENCODE_GO_FALLBACK_MODEL=qwen3.5-plus
+OPENCODE_GO_MODEL=gpt-5.6-luna
+OPENCODE_GO_FALLBACK_MODEL=glm-5.2
+OPENCODE_GO_CODE_MODEL=glm-5.2
+OPENCODE_GO_CODE_FALLBACK_MODEL=gpt-5.6-luna
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -97,7 +101,7 @@ pnpm exec drizzle-kit check
 pnpm build
 ```
 
-2026-08-12 当前发布门结果：Vitest 340/340、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9；TypeScript、ESLint、Migration 生成和 Vinext production build 通过。只读压测实际运行 1,000 请求/40 并发，0 失败、P95 2162.62ms。该数据是本机开发 Worker 基线，不应外推为生产容量承诺。
+2026-08-12 当前发布门结果：Vitest 351/351、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9；TypeScript、ESLint、Migration 生成和 Vinext production build 通过。模型网关会按 OpenCode Go 模型选择 Responses API 或 Chat Completions，并统一审计流式状态与 Token 用量。只读压测实际运行 1,000 请求/40 并发，0 失败、P95 2162.62ms。该数据是本机开发 Worker 基线，不应外推为生产容量承诺。
 
 浏览器 E2E 覆盖：项目创建、工作台、流式 Agent 结果、断线恢复、消息队列、账号项目库、v0 真实性、触屏 DOM 编辑，以及一条不 Mock API 的本地 D1 草稿创建/刷新恢复。真实付费模型生成和外部 Provider 验收需在配置相应密钥的 staging/生产环境单独执行。
 
@@ -106,12 +110,12 @@ pnpm build
 ```text
 用户需求
   → 创建 Project / Message
-  → Iris 生成结构化计划
-  → Alex 生成带 path 的三个代码块
-  → 共享调用 / Token / 时间预算，主模型失败时受控降级
-  → 解析并与当前版本增量合并
-  → 写入 AgentEvent 审计轨迹与 GenerationRun 用量汇总
-  → 写入 Version 全量快照
+  → Iris 需求工件 → Bob 架构/Runtime 工件
+  → Alex 分别生成 index.html / styles.css / script.js 并逐文件保存断点
+  → Ray 模型审查 + 确定性/应用类型质量门 → 有限修复
+  → 每阶段主备模型、工件级救回、确定性降级与独立预算
+  → 写入 Artifact / ModelAttempt / AgentEvent / GenerationRun 审计
+  → 仅在质量门通过后写入 Version 全量快照
   → 注入 CSS / runtime / JavaScript
   → sandbox iframe 运行
   → ready / error / unhandledrejection 回传工作台

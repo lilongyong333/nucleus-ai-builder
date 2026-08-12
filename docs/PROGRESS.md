@@ -1,6 +1,6 @@
 # Nucleus 开发进度与验收记录
 
-最后更新：2026-08-10
+最后更新：2026-08-12
 
 ## 完成度
 
@@ -419,3 +419,25 @@ Production      passed
 - 新增完整教学：`docs/learning/19-commercial-hardening-and-provider-runbook.md`。
 
 仍需外部资源的项目保持诚实边界：托管 gVisor/Kata 集群、GitHub App 注册、Stripe 商户/价格、Resend 验证域名、Sentry 项目、Cloudflare Provisioner Token 和第二云厂商跨区域 DR 都不能仅凭仓库代码宣称已经在线。
+
+## 第十五轮：生产生成故障复盘与工件级恢复
+
+- 从真实失败 Run 确认：总预算为 180,000 Tokens/24 Calls，实际仅使用 15,060 Tokens/10 Calls；失败并非预算耗尽；
+- Bob 曾收到 HTTP 200、3,905 字符的不可解析 JSON，备用模型多次返回 3,000–4,000 字符但缺少 SSE 终止事件，旧编排因此重复执行整个 Bob 阶段三次；
+- 对照 OpenCode Go 当前官方端点后确认旧网关还存在协议错配：`gpt-5.6-luna` 过去错误走 `/chat/completions`；现在 GPT 改走 `/responses`，GLM 保持 `/chat/completions`，两种 SSE、完成状态和 Token 用量统一归一；
+- 新增 `structured-output.ts`，用平衡括号扫描和受限尾逗号修复解析 JSON，不执行模型文本；代码工件只有完整 Markdown Fence 且通过文件协议才可救回；
+- `model-gateway.ts` 区分明确 `finish_reason=length` 与“缺终止事件但工件完整”，后者标记 `recovered` 并保留完整审计；流末尾超时时也可救回已完成工件；
+- Iris、Bob、Ray 增加保守确定性恢复；恢复事件显式入库，Alex 仍必须生成真实代码，最终质量门不可跳过；认证/限流等纯 HTTP 错误不会伪装为成功；
+- 中文打字测试增加输入/输入法、正确率与 WPM、随机题库、成绩与重试四项阻断契约；
+- 工作台模型明细开始显示每次尝试的真实错误和 `recovered` 状态；同批 Attempts 使用单调时间戳，界面顺序与真实调用顺序一致；
+- 新增完整教学 `docs/learning/20-why-unlimited-tokens-do-not-fix-generation.md`。
+
+### 第十五轮本地门禁
+
+- TypeScript：通过；
+- Vitest：17 文件，351/351；
+- 固定产品与安全 Eval：283/283；
+- ESLint：通过；
+- `git diff --check`：通过；
+- Chromium E2E：9/9；
+- Vinext production build：通过。

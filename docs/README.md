@@ -1,6 +1,6 @@
 # Nucleus 文档中心
 
-> 当前代码基线：`agent/metagpt-quality-gate` 分支 2026-08-12 商业化加固版。发布门为 Vitest 340/340、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9，并完成 1,000 请求/40 并发基线。代码、Sites 部署和外部 Provider 账号是否已配置是三个不同状态，文档分别标注。
+> 当前代码基线：`agent/metagpt-quality-gate` 分支 2026-08-12 生成可靠性与商业化加固版。发布门为 Vitest 351/351、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9，并完成 1,000 请求/40 并发基线。代码、Sites 部署和外部 Provider 账号是否已配置是三个不同状态，文档分别标注。
 
 ## 想从零照着做
 

@@ -1,7 +1,7 @@
 import { acquireGenerationStep, getProject, incrementGenerationRepair, listGenerationArtifacts, markError, recordModelAttempts, recordNextGenerationEvent, recordRaceCandidates, releaseGenerationStep, saveGeneration, saveGenerationArtifact, updateGenerationStage, type GenerationMetrics } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
 import { ModelGatewayError, type ModelAttempt } from "@/lib/model-gateway";
-import { AgentOutputError, createStepBudget, generationBudgetLimits, runAlexFileAgent, runAlexFileRaceAgent, runBobAgent, runIrisAgent, runRayRepairAgent, runRayReviewAgent, type AgentModelResult, type ArchitectureArtifact, type RayReviewArtifact } from "@/lib/opencode";
+import { AgentOutputError, createStepBudget, deterministicBobResult, deterministicIrisResult, deterministicRayResult, generationBudgetLimits, runAlexFileAgent, runAlexFileRaceAgent, runBobAgent, runIrisAgent, runRayRepairAgent, runRayReviewAgent, type AgentModelResult, type ArchitectureArtifact, type RayReviewArtifact } from "@/lib/opencode";
 import { normalizeGeneratedFiles } from "@/lib/runtime";
 import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
@@ -84,8 +84,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
           if (stage === "requirements") {
             await status("Iris", stage, "提炼需求契约", "正在把自然语言转为可逐项验收的产品工件", "working");
-            const result = await runIrisAgent(run.prompt, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress);
+            const result = await withDeterministicRecovery(
+              () => runIrisAgent(run.prompt, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress),
+              (reason) => deterministicIrisResult(run.prompt, project.currentVersionId ? project.files : undefined, reason),
+            );
             await persistResult(runId, projectId, "Iris", stage, result);
+            await recordRecovery(runId, projectId, "Iris", stage, result, emit);
             const artifact = await saveGenerationArtifact(runId, projectId, "Iris", "requirements", JSON.stringify(result.artifact));
             await status("Iris", stage, "需求工件完成", `${result.artifact.features.length} 个功能 · ${result.artifact.acceptanceCriteria?.length ?? 0} 条验收标准`, "done", result);
             emit({ type: "plan", plan: result.artifact });
@@ -94,8 +98,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           } else if (stage === "architecture") {
             const plan = parseArtifact<AgentPlan>(artifactMap, "requirements");
             await status("Bob", stage, "设计实现架构", "正在建立状态模型、文件职责、交互流和测试策略", "working");
-            const result = await runBobAgent(run.prompt, plan, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress);
+            const result = await withDeterministicRecovery(
+              () => runBobAgent(run.prompt, plan, project.currentVersionId ? project.files : undefined, abortController.signal, modelBudget(), reportProgress),
+              (reason) => deterministicBobResult(run.prompt, plan, reason),
+            );
             await persistResult(runId, projectId, "Bob", stage, result);
+            await recordRecovery(runId, projectId, "Bob", stage, result, emit);
             const artifact = await saveGenerationArtifact(runId, projectId, "Bob", "architecture", JSON.stringify(result.artifact));
             const manifestArtifact = await saveGenerationArtifact(runId, projectId, "Bob", "manifest", JSON.stringify(result.artifact.runtime));
             await status("Bob", stage, "架构工件完成", `${result.artifact.stateModel.length} 个状态约束 · ${result.artifact.testPlan.length} 条测试策略`, "done", result);
@@ -128,8 +136,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             const architecture = parseArtifact<ArchitectureArtifact>(artifactMap, "architecture");
             const files = normalizeGeneratedFiles(filesFromArtifacts(artifactMap, true));
             await status("Ray", stage, "执行交付审查", "正在结合确定性检查、验收标准和代码证据做最终审查", "working");
-            const result = await runRayReviewAgent(run.prompt, plan, architecture, files, abortController.signal, modelBudget(), reportProgress);
+            const result = await withDeterministicRecovery(
+              () => runRayReviewAgent(run.prompt, plan, architecture, files, abortController.signal, modelBudget(), reportProgress),
+              (reason) => deterministicRayResult(run.prompt, plan, files, reason),
+            );
             await persistResult(runId, projectId, "Ray", stage, result);
+            await recordRecovery(runId, projectId, "Ray", stage, result, emit);
             const artifact = await saveGenerationArtifact(runId, projectId, "Ray", "quality", JSON.stringify(result.artifact));
             emit({ type: "review", report: result.artifact.deterministic });
             emit({ type: "artifact", artifact });
@@ -208,6 +220,43 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
 async function persistResult<T>(runId: string, projectId: string, agent: AgentName, phase: string, result: AgentModelResult<T>) {
   await recordModelAttempts(runId, projectId, agent, phase, result.attempts.map(toPersistedAttempt));
+}
+
+async function recordRecovery<T>(runId: string, projectId: string, agent: AgentName, phase: string, result: AgentModelResult<T>, emit: (event: AgentEvent) => void) {
+  if (!result.recovery) return;
+  const saved = await recordNextGenerationEvent(runId, projectId, {
+    agent,
+    phase: `${phase}:recovery`,
+    title: `${agent} 已启用确定性恢复`,
+    detail: `${result.recovery.reason.slice(0, 360)}；工作流继续执行，最终仍须通过代码协议与质量门。`,
+    state: "done",
+    model: result.model,
+  });
+  emit({ type: "status", agent, title: saved.title, detail: saved.detail, state: "done", audit: { runId: saved.runId, eventId: saved.id, phase: saved.phase, sequence: saved.sequence, model: result.model } });
+}
+
+async function withDeterministicRecovery<T>(execute: () => Promise<AgentModelResult<T>>, recover: (reason: string) => AgentModelResult<T>): Promise<AgentModelResult<T>> {
+  try {
+    return await execute();
+  } catch (error) {
+    if (!isRecoverablePlanningError(error)) throw error;
+    const attempts = attemptsFromError(error);
+    const recovered = recover(error instanceof Error ? error.message : "模型没有形成可用工件");
+    return {
+      ...recovered,
+      attempts,
+      usage: attempts.reduce((total, item) => ({ promptTokens: total.promptTokens + item.usage.promptTokens, completionTokens: total.completionTokens + item.usage.completionTokens, totalTokens: total.totalTokens + item.usage.totalTokens }), { promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+      modelCalls: attempts.length,
+      model: [...new Set([...attempts.map((item) => item.model), recovered.model])].join(" → "),
+    };
+  }
+}
+
+function isRecoverablePlanningError(error: unknown): boolean {
+  if (error instanceof AgentOutputError) return true;
+  if (!(error instanceof ModelGatewayError) || error.kind !== "provider") return false;
+  const finalAttempt = error.attempts.at(-1);
+  return Boolean(finalAttempt && ["empty", "incomplete", "timeout", "network_error"].includes(finalAttempt.status));
 }
 
 function toPersistedAttempt(attempt: ModelAttempt) {

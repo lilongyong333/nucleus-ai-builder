@@ -65,4 +65,33 @@ describe("generated app quality gate", () => {
     });
     expect(checks.every((check) => check.severity === "pass")).toBe(true);
   });
+
+  it("blocks a typing-test mockup without real metrics", () => {
+    const checks = reviewProductContract("做一个中文打字速度测试", {
+      ...starterFiles,
+      "index.html": '<main><textarea aria-label="输入"></textarea><button>完成</button></main>',
+      "script.js": "document.querySelector('textarea').addEventListener('input', () => {});",
+    });
+    expect(checks).toHaveLength(4);
+    expect(checks.find((check) => check.id === "typing-live-metrics")?.severity).toBe("error");
+    expect(checks.find((check) => check.id === "typing-random-content")?.severity).toBe("error");
+  });
+
+  it("recognizes a functional Chinese typing-test loop", () => {
+    const checks = reviewProductContract("中文 typing WPM 测试", {
+      "index.html": '<main><p id="text"></p><textarea aria-label="打字输入"></textarea><output id="accuracy">正确率</output><output id="wpm">WPM</output><section id="result">成绩</section><button id="restart">再测一次</button></main>',
+      "styles.css": "main{display:grid}",
+      "script.js": `
+        const texts = ['春风又绿江南岸', '生活明朗万物可爱'];
+        let startTime = Date.now(), correct = 0;
+        const target = texts[Math.floor(Math.random() * texts.length)];
+        document.querySelector('textarea').addEventListener('compositionend', update);
+        document.querySelector('textarea').addEventListener('input', update);
+        document.querySelector('#restart').addEventListener('click', resetTest);
+        function update(event) { const elapsed = (Date.now() - startTime) / 60000; const accuracy = correct / Math.max(1, event.target.value.length); const wpm = correct / elapsed; document.querySelector('#wpm').textContent = String(wpm); document.querySelector('#accuracy').textContent = String(accuracy); }
+        function resetTest() { startTime = Date.now(); document.querySelector('#result').textContent = '成绩'; }
+      `,
+    });
+    expect(checks.every((check) => check.severity === "pass")).toBe(true);
+  });
 });

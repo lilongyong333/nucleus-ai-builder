@@ -191,6 +191,7 @@ export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
  */
 export function reviewProductContract(prompt: string, files: GeneratedFiles): AppQualityCheck[] {
   const request = prompt.toLowerCase();
+  if (/(打字|打字速度|typing|type speed|wpm|cpm)/i.test(request)) return typingProductChecks(files);
   if (!/(贪吃蛇|snake)/i.test(request)) return [];
 
   const html = files["index.html"];
@@ -239,6 +240,50 @@ export function reviewProductContract(prompt: string, files: GeneratedFiles): Ap
       passed: /\b(?:collision|gameOver|gameover|restart|resetGame|startGame|pauseGame|isPaused|wall)\b/i.test(script),
       passDetail: "检测到碰撞、结束、重开或暂停等生命周期逻辑",
       failDetail: "缺少碰撞/结束/重开等游戏生命周期证据",
+      weight: 0,
+      blocking: true,
+    }),
+  ];
+}
+
+function typingProductChecks(files: GeneratedFiles): AppQualityCheck[] {
+  const html = files["index.html"];
+  const script = files["script.js"];
+  const source = `${html}\n${script}`;
+  return [
+    makeCheck({
+      id: "typing-real-input",
+      label: "真实打字输入",
+      passed: /<(?:input|textarea)\b/i.test(html) && /(?:input|beforeinput|compositionend)/i.test(script),
+      passDetail: "检测到可输入控件及输入/中文输入法事件",
+      failDetail: "缺少真实输入控件或 input/compositionend 处理，页面可能无法完成打字测试",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "typing-live-metrics",
+      label: "正确率与速度统计",
+      passed: /(?:accuracy|correct|正确率|正确字符)/i.test(source) && /(?:wpm|cpm|每分钟|字数\/分)/i.test(source) && /(?:elapsed|duration|startTime|Date\.now|performance\.now|计时|用时)/i.test(script),
+      passDetail: "检测到正确率、每分钟速度和计时证据",
+      failDetail: "缺少正确率、WPM/CPM 或计时计算，无法满足核心实时统计需求",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "typing-random-content",
+      label: "随机题库",
+      passed: /Math\.random\s*\(|crypto\.getRandomValues\s*\(/.test(script) && /\[[\s\S]*["'`][\s\S]*["'`][\s\S]*\]/.test(script),
+      passDetail: "检测到本地题库和随机选择逻辑",
+      failDetail: "缺少题库随机选择逻辑，每次测试可能始终展示相同文本",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "typing-results-restart",
+      label: "完成、成绩与重试",
+      passed: /(?:result|score|成绩|评级|完成)/i.test(source) && /(?:restart|reset|retry|again|再测|重试|重新)/i.test(source),
+      passDetail: "检测到完成成绩和重新开始流程",
+      failDetail: "缺少完成后的成绩展示或重新测试流程",
       weight: 0,
       blocking: true,
     }),

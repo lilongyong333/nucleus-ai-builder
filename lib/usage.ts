@@ -8,8 +8,10 @@ function tokenCount(value: unknown): number {
 
 export function normalizeUsage(value: unknown): ModelUsage {
   const usage = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const promptTokens = tokenCount(usage.prompt_tokens);
-  const completionTokens = tokenCount(usage.completion_tokens);
+  // Chat Completions reports prompt/completion tokens while the Responses API
+  // reports input/output tokens. Normalize both protocols into one audit shape.
+  const promptTokens = tokenCount(usage.prompt_tokens) || tokenCount(usage.input_tokens);
+  const completionTokens = tokenCount(usage.completion_tokens) || tokenCount(usage.output_tokens);
   return {
     promptTokens,
     completionTokens,

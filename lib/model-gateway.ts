@@ -2,7 +2,7 @@ import { addUsage, emptyUsage, normalizeUsage } from "./usage";
 import type { ModelUsage } from "./types";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-export type ModelAttemptStatus = "success" | "empty" | "incomplete" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
+export type ModelAttemptStatus = "success" | "recovered" | "empty" | "incomplete" | "http_error" | "timeout" | "network_error" | "budget_exceeded" | "cancelled";
 
 export type ModelAttempt = {
   model: string;
@@ -40,6 +40,15 @@ export type ModelStreamUpdate = {
 };
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
+type ModelProtocol = "chat-completions" | "responses";
+type NormalizedModelResponse = {
+  content: string;
+  reasoningContent: string;
+  usage: unknown;
+  completed: boolean;
+  finishReason: string | null;
+  streamError: unknown | null;
+};
 
 export class ModelGatewayError extends Error {
   constructor(message: string, readonly attempts: ModelAttempt[], readonly kind: "provider" | "budget") {
@@ -73,6 +82,7 @@ export async function requestChat(input: {
   signal?: AbortSignal;
   fetcher?: FetchLike;
   onDelta?: (update: ModelStreamUpdate) => void;
+  acceptIncomplete?: (content: string) => boolean;
 }): Promise<GatewayChatResult> {
   const startedAt = Date.now();
   const attempts: ModelAttempt[] = [];
@@ -106,12 +116,15 @@ export async function requestChat(input: {
       const messages = emptyAttempt === 0
         ? input.messages
         : [...input.messages, { role: "user" as const, content: "The previous completion was empty. Output the requested final answer immediately, with no reasoning preface." }];
+      const protocol = protocolForModel(model);
 
       try {
-        const response = await fetcher(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        const response = await fetcher(`${input.baseUrl.replace(/\/$/, "")}/${protocol === "responses" ? "responses" : "chat/completions"}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${input.apiKey}` },
-          body: JSON.stringify({ model, messages, max_tokens: input.maxTokens, stream: true, stream_options: { include_usage: true } }),
+          body: JSON.stringify(protocol === "responses"
+            ? { model, input: messages, max_output_tokens: input.maxTokens, stream: true }
+            : { model, messages, max_tokens: input.maxTokens, stream: true, stream_options: { include_usage: true } }),
           signal,
         });
         if (!response.ok) {
@@ -124,16 +137,38 @@ export async function requestChat(input: {
           break;
         }
 
-        const data = await readChatResponse(response, model, reportDelta);
+        const data = protocol === "responses"
+          ? await readResponsesResponse(response, model, reportDelta)
+          : await readChatResponse(response, model, reportDelta);
         const usage = normalizeUsage(data.usage);
         chatUsage = addUsage(chatUsage, usage);
         input.budget.usage = addUsage(input.budget.usage, usage);
         const content = usableContent({ content: data.content, reasoning_content: data.reasoningContent });
-        const completed = Boolean(content) && data.completed;
-        const completionError = content
-          ? `Incomplete model stream${data.finishReason ? ` (finish_reason=${data.finishReason})` : " (missing terminal event)"}`
-          : "Empty model response";
-        attempts.push(attempt(model, completed ? "success" : content ? "incomplete" : "empty", attemptStartedAt, firstTokenMs, outputChars, response.status, usage, completed ? null : completionError));
+        if (input.signal?.aborted) throw data.streamError ?? input.signal.reason ?? new DOMException("Model request cancelled", "AbortError");
+        const artifactRecovered = Boolean(content)
+          && !data.completed
+          && data.finishReason === null
+          && safelyAcceptIncomplete(input.acceptIncomplete, content);
+        const completed = Boolean(content) && (data.completed || artifactRecovered);
+        const streamTimedOut = timeoutController.signal.aborted;
+        const streamErrorDetail = data.streamError instanceof Error ? data.streamError.message : null;
+        const completionError = artifactRecovered
+          ? `Recovered a structurally complete artifact after ${streamTimedOut ? "the stream timed out" : "the provider omitted its terminal event"}`
+          : content
+            ? `Incomplete model stream${data.finishReason ? ` (finish_reason=${data.finishReason})` : streamTimedOut ? " (request timed out)" : " (missing terminal event)"}${streamErrorDetail ? `: ${streamErrorDetail}` : ""}`
+            : streamTimedOut
+              ? "Model request timed out before a usable artifact was completed"
+              : streamErrorDetail ?? "Empty model response";
+        const status: ModelAttemptStatus = completed
+          ? artifactRecovered ? "recovered" : "success"
+          : streamTimedOut
+            ? "timeout"
+            : data.streamError
+              ? "network_error"
+              : content
+                ? "incomplete"
+                : "empty";
+        attempts.push(attempt(model, status, attemptStartedAt, firstTokenMs, outputChars, response.status, usage, completed && !artifactRecovered ? null : completionError));
         if (input.budget.usage.totalTokens > input.budget.maxTotalTokens) {
           attempts[attempts.length - 1] = { ...attempts[attempts.length - 1], status: "budget_exceeded", error: "Token budget exhausted" };
           throw new ModelGatewayError(`Model usage exceeded the ${input.budget.maxTotalTokens} token budget`, attempts, "budget");
@@ -161,7 +196,7 @@ export async function requestChat(input: {
   throw new ModelGatewayError(lastError, attempts, "provider");
 }
 
-async function readChatResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<{ content: string; reasoningContent: string; usage: unknown; completed: boolean; finishReason: string | null }> {
+async function readChatResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<NormalizedModelResponse> {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.includes("text/event-stream")) {
     const data = await response.json() as { choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string | null }>; usage?: unknown };
@@ -169,7 +204,7 @@ async function readChatResponse(response: Response, model: string, onDelta?: (up
     const finishReason = typeof data.choices?.[0]?.finish_reason === "string" ? data.choices[0].finish_reason : null;
     const content = typeof message?.content === "string" ? message.content : "";
     if (content) onDelta?.({ model, delta: content, totalChars: content.length });
-    return { content, reasoningContent: typeof message?.reasoning_content === "string" ? message.reasoning_content : "", usage: data.usage, completed: finishReason !== "length", finishReason };
+    return { content, reasoningContent: typeof message?.reasoning_content === "string" ? message.reasoning_content : "", usage: data.usage, completed: finishReason !== "length", finishReason, streamError: null };
   }
 
   if (!response.body) throw new Error(`Model ${model} returned an empty stream`);
@@ -181,6 +216,7 @@ async function readChatResponse(response: Response, model: string, onDelta?: (up
   let usage: unknown;
   let sawDone = false;
   let finishReason: string | null = null;
+  let streamError: unknown | null = null;
 
   const consumeLine = (line: string) => {
     const trimmed = line.trim();
@@ -204,16 +240,176 @@ async function readChatResponse(response: Response, model: string, onDelta?: (up
     onDelta?.({ model, delta: delta.content, totalChars: content.length });
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) consumeLine(line);
-    if (done) break;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+      if (done) break;
+    }
+  } catch (error) {
+    streamError = error;
   }
-  if (buffer.trim()) consumeLine(buffer);
-  return { content, reasoningContent, usage, completed: finishReason === "stop" || (sawDone && finishReason !== "length"), finishReason };
+  if (buffer.trim()) {
+    try {
+      consumeLine(buffer);
+    } catch (error) {
+      streamError ??= error;
+    }
+  }
+  return { content, reasoningContent, usage, completed: finishReason === "stop" || (sawDone && finishReason !== "length"), finishReason, streamError };
+}
+
+async function readResponsesResponse(response: Response, model: string, onDelta?: (update: ModelStreamUpdate) => void): Promise<NormalizedModelResponse> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    const data = await response.json() as ResponsesApiResponse;
+    const content = extractResponseText(data);
+    if (content) onDelta?.({ model, delta: content, totalChars: content.length });
+    const finishReason = responseFinishReason(data);
+    return {
+      content,
+      reasoningContent: "",
+      usage: data.usage,
+      completed: data.status === "completed",
+      finishReason,
+      streamError: data.error ? new Error(data.error.message ?? data.error.code ?? "Responses API request failed") : null,
+    };
+  }
+
+  if (!response.body) throw new Error(`Model ${model} returned an empty stream`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let reasoningContent = "";
+  let usage: unknown;
+  let completed = false;
+  let finishReason: string | null = null;
+  let streamError: unknown | null = null;
+
+  const appendContent = (delta: string) => {
+    if (!delta) return;
+    content += delta;
+    onDelta?.({ model, delta, totalChars: content.length });
+  };
+  const adoptFinalContent = (text: string) => {
+    if (!text || text === content) return;
+    if (text.startsWith(content)) appendContent(text.slice(content.length));
+    else if (!content) appendContent(text);
+  };
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    const event = JSON.parse(payload) as ResponsesApiStreamEvent;
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+      appendContent(event.delta);
+      return;
+    }
+    if (event.type === "response.output_text.done" && typeof event.text === "string") {
+      adoptFinalContent(event.text);
+      return;
+    }
+    if (event.type === "response.reasoning_text.delta" && typeof event.delta === "string") {
+      reasoningContent += event.delta;
+      return;
+    }
+    if (event.type === "response.completed" && event.response) {
+      completed = event.response.status === "completed";
+      usage = event.response.usage;
+      finishReason = responseFinishReason(event.response) ?? (completed ? "stop" : null);
+      adoptFinalContent(extractResponseText(event.response));
+      return;
+    }
+    if (event.type === "response.incomplete" && event.response) {
+      usage = event.response.usage;
+      finishReason = responseFinishReason(event.response) ?? "incomplete";
+      adoptFinalContent(extractResponseText(event.response));
+      return;
+    }
+    if (event.type === "response.failed" && event.response) {
+      usage = event.response.usage;
+      finishReason = responseFinishReason(event.response) ?? "failed";
+      const detail = event.response.error?.message ?? event.response.error?.code ?? "Responses API request failed";
+      streamError = new Error(detail);
+      return;
+    }
+    if (event.type === "error") {
+      const detail = event.message ?? event.error?.message ?? "Responses API stream failed";
+      streamError = new Error(detail);
+    }
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+      if (done) break;
+    }
+  } catch (error) {
+    streamError ??= error;
+  }
+  if (buffer.trim()) {
+    try {
+      consumeLine(buffer);
+    } catch (error) {
+      streamError ??= error;
+    }
+  }
+  return { content, reasoningContent, usage, completed, finishReason, streamError };
+}
+
+type ResponsesApiResponse = {
+  status?: string;
+  output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+  usage?: unknown;
+  incomplete_details?: { reason?: string | null } | null;
+  error?: { code?: string; message?: string } | null;
+};
+
+type ResponsesApiStreamEvent = {
+  type?: string;
+  delta?: string;
+  text?: string;
+  message?: string;
+  error?: { message?: string } | null;
+  response?: ResponsesApiResponse;
+};
+
+function extractResponseText(response: ResponsesApiResponse): string {
+  return (response.output ?? [])
+    .flatMap((item) => item.type === "message" || item.type === undefined ? item.content ?? [] : [])
+    .filter((part) => part.type === "output_text" || part.type === undefined)
+    .map((part) => typeof part.text === "string" ? part.text : "")
+    .join("");
+}
+
+function responseFinishReason(response: ResponsesApiResponse): string | null {
+  const reason = response.incomplete_details?.reason;
+  if (typeof reason !== "string" || !reason) return response.status === "failed" ? "failed" : null;
+  return /max(?:imum)?[_ -]?(?:output[_ -]?)?tokens?/i.test(reason) ? "length" : reason;
+}
+
+function protocolForModel(model: string): ModelProtocol {
+  // OpenCode Go exposes GPT models through the OpenAI Responses-compatible
+  // endpoint, while GLM models use Chat Completions.
+  return /^gpt-/i.test(model.trim()) ? "responses" : "chat-completions";
+}
+
+function safelyAcceptIncomplete(accept: ((content: string) => boolean) | undefined, content: string): boolean {
+  if (!accept) return false;
+  try {
+    return accept(content);
+  } catch {
+    return false;
+  }
 }
 
 function reserveCall(budget: ModelBudget, model: string, attempts: ModelAttempt[]) {

@@ -6,6 +6,7 @@ import { createModelBudget, ModelGatewayError, requestChat, type ChatMessage, ty
 import { extractGeneratedFiles, parseGeneratedReply } from "./parser";
 import { planFromPrompt } from "./planner";
 import { qualityRepairBrief, reviewGeneratedApp, reviewProductContract } from "./quality";
+import { isCompleteJsonArtifact, isCompleteRepairArtifact, isCompleteSingleFileArtifact, isCompleteThreeFileArtifact, parseStructuredJsonObject } from "./structured-output";
 import { addUsage, emptyUsage } from "./usage";
 import type { AgentName, AgentPlan, AppQualityCheck, AppQualityReport, AppRuntimeBlueprint, GeneratedFiles, ModelUsage } from "./types";
 
@@ -73,7 +74,7 @@ export type GenerationProgress = {
 
 type ProgressStage = Pick<GenerationProgress, "agent" | "phase" | "label">;
 
-type ChatOptions = { models?: string[]; requestTimeoutMs?: number; fallbackReserveMs?: number };
+type ChatOptions = { models?: string[]; requestTimeoutMs?: number; fallbackReserveMs?: number; acceptIncomplete?: (content: string) => boolean };
 
 function codeChatOptions(): ChatOptions {
   return {
@@ -98,6 +99,7 @@ async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBud
     emptyRetriesPerModel: 0,
     budget,
     signal,
+    acceptIncomplete: options.acceptIncomplete,
     onDelta: progress ? (update) => {
       lastTotalChars = update.totalChars;
       progress.report({ ...progress.stage, ...update, done: false });
@@ -142,6 +144,7 @@ export type AgentModelResult<T> = {
   modelCalls: number;
   model: string;
   attempts: ModelAttempt[];
+  recovery?: { kind: "deterministic"; reason: string };
 };
 
 export class AgentOutputError extends Error {
@@ -156,7 +159,7 @@ export async function runIrisAgent(prompt: string, currentFiles: GeneratedFiles 
   const result = await chat([
     { role: "system", content: "You are Iris, a principal product manager in a real software team. Convert the request into an implementation contract. Return compact valid JSON only with keys: appName (string), summary (string), archetype (string), features (5-10 strings), acceptanceCriteria (6-14 independently testable strings), risks (2-6 strings), design (string), testPlan (5-12 strings). Resolve obvious product details instead of asking questions. For games, cover controls, rules, scoring, lifecycle, accessibility, responsive behavior and persistence where appropriate. Do not return markdown or reasoning." },
     { role: "user", content: `User request:\n${prompt}${currentFiles ? "\nThis is an iteration of an existing three-file application; preserve working behavior unless explicitly replaced." : ""}` },
-  ], runtimeInteger("OPENCODE_GO_IRIS_MAX_TOKENS", 6_000, 1_000, 16_000), budget, signal, report ? { stage: { agent: "Iris", phase: "requirements:model", label: "Iris 正在形成可验收需求" }, report } : undefined);
+  ], runtimeInteger("OPENCODE_GO_IRIS_MAX_TOKENS", 6_000, 1_000, 16_000), budget, signal, report ? { stage: { agent: "Iris", phase: "requirements:model", label: "Iris 正在形成可验收需求" }, report } : undefined, { acceptIncomplete: isCompleteJsonArtifact });
   const parsed = parseAgentJson(result, "Iris 没有返回可解析的需求工件");
   const deterministic = planFromPrompt(prompt, Boolean(currentFiles));
   const plan: AgentPlan = {
@@ -177,7 +180,7 @@ export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles:
   const result = await chat([
     { role: "system", content: "You are Bob, a senior full-stack architect. Produce a concrete architecture handoff for a vanilla HTML/CSS/JavaScript application running on the Nucleus platform. Return compact valid JSON only with keys: summary, visualDirection, informationArchitecture (array), stateModel (array), interactionFlow (array), fileResponsibilities (object with index.html, styles.css, script.js), testPlan (array), runtime (object). runtime must contain: collections (array of {name,label,access: owner|public-read|public-write,fields:[{name,type:string|number|boolean|date|json,required,maxLength?}]}), authMode (anonymous|account|mixed), backendFunctions (array of {name,method:GET|POST,path,purpose,status:available|external-runner-required}), dependencies ({npm:[],pip:[],system:[],containers:[]}). Prefer the platform data API for durable product data. Declare dependencies honestly; Python, Java, native packages and containers require the external runner. The three browser files MUST remain separate: index.html contains semantic markup only and MUST NOT inline style or script; styles.css contains CSS only; script.js contains JavaScript only. Never recommend an all-in-one document. Make every acceptance criterion implementable and testable. Do not return markdown or reasoning." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris requirements:\n${JSON.stringify(plan)}${currentFiles ? "\n\nAn existing version will be supplied to Alex for a safe iteration." : ""}` },
-  ], runtimeInteger("OPENCODE_GO_BOB_MAX_TOKENS", 7_000, 1_000, 18_000), budget, signal, report ? { stage: { agent: "Bob", phase: "architecture:model", label: "Bob 正在设计状态、交互和测试契约" }, report } : undefined);
+  ], runtimeInteger("OPENCODE_GO_BOB_MAX_TOKENS", 7_000, 1_000, 18_000), budget, signal, report ? { stage: { agent: "Bob", phase: "architecture:model", label: "Bob 正在设计状态、交互和测试契约" }, report } : undefined, { acceptIncomplete: isCompleteJsonArtifact });
   const parsed = parseAgentJson(result, "Bob 没有返回可解析的架构工件");
   const architecture: ArchitectureArtifact = {
     summary: stringValue(parsed.summary, `以三文件自包含架构实现 ${plan.appName}`, 600),
@@ -190,6 +193,45 @@ export async function runBobAgent(prompt: string, plan: AgentPlan, currentFiles:
     runtime: normalizeRuntimeBlueprint(parsed.runtime, prompt, plan),
   };
   return modelResult(architecture, result, startedAt);
+}
+
+export function deterministicIrisResult(prompt: string, currentFiles: GeneratedFiles | undefined, reason: string): AgentModelResult<AgentPlan> {
+  const plan = planFromPrompt(prompt, Boolean(currentFiles));
+  const acceptance = plan.features.map((feature) => `可以在预览中实际验证：${feature}`);
+  return recoveredResult({
+    ...plan,
+    archetype: "interactive-web-app",
+    acceptanceCriteria: acceptance,
+    risks: ["模型 Provider 暂时不可用，已采用确定性需求契约", "生成代码仍必须通过 Ray 与确定性质量门"],
+    testPlan: acceptance.map((item) => `测试：${item}`),
+  }, reason);
+}
+
+export function deterministicBobResult(prompt: string, plan: AgentPlan, reason: string): AgentModelResult<ArchitectureArtifact> {
+  return recoveredResult({
+    summary: `以可恢复的三文件浏览器架构实现 ${plan.appName}`,
+    visualDirection: plan.design,
+    informationArchitecture: plan.features.slice(0, 14),
+    stateModel: ["单一应用状态作为事实源", "所有输入驱动显式状态迁移", "渲染只读取当前状态", "开始、暂停、完成和重置均可恢复"],
+    interactionFlow: (plan.acceptanceCriteria ?? plan.features).slice(0, 18),
+    fileResponsibilities: { ...canonicalFileResponsibilities },
+    testPlan: (plan.testPlan ?? plan.features.map((feature) => `验证：${feature}`)).slice(0, 18),
+    runtime: normalizeRuntimeBlueprint(undefined, prompt, plan),
+  }, reason);
+}
+
+export function deterministicRayResult(prompt: string, plan: AgentPlan, files: GeneratedFiles, reason: string): AgentModelResult<RayReviewArtifact> {
+  const deterministic = reviewGeneratedApp(files);
+  const productChecks = reviewProductContract(prompt, files);
+  const failedChecks = [...deterministic.checks, ...productChecks].filter((check) => check.severity === "error");
+  return recoveredResult({
+    passed: deterministic.passed && productChecks.every((check) => check.severity !== "error"),
+    summary: failedChecks.length ? `确定性审查发现 ${failedChecks.length} 个阻断问题` : `${deterministic.summary}；模型 Reviewer 不可用，采用保守确定性审查`,
+    functionalChecks: (plan.acceptanceCriteria ?? plan.features).slice(0, 20).map((name) => ({ name, passed: failedChecks.length === 0, evidence: failedChecks.length ? "存在阻断性确定性检查，需进入修复" : "通用质量门及应用类型契约均已通过" })),
+    issues: failedChecks.map((check) => ({ severity: "error" as const, file: "application" as const, detail: check.detail })),
+    deterministic,
+    productChecks,
+  }, reason);
 }
 
 export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: string, plan: AgentPlan, architecture: ArchitectureArtifact, files: Partial<GeneratedFiles>, currentFiles: GeneratedFiles | undefined, signal: AbortSignal | undefined, budget: ModelBudget, report?: (event: GenerationProgress) => void, agentOptions: { models?: string[] } = {}): Promise<AgentModelResult<string>> {
@@ -222,7 +264,7 @@ export async function runAlexFileAgent(path: keyof GeneratedFiles, prompt: strin
   const result = await chat([
     { role: "system", content: `You are Alex, an elite implementation engineer working in a multi-agent pipeline. Your current and ONLY responsibility is ${path}; separate calls create the other two files. Generate EXACTLY ONE production-ready file: ${path}. ${pathRule} Any inline implementation or content belonging to another file is a protocol failure, even if the project request asks for a complete application. Your entire response must contain exactly one markdown code block with the exact opening line \`\`\`${languageFor(path)}{path=${path}} and one closing fence. Do not include reasoning, summaries, prefaces, or any other file. Stop immediately after the closing fence. Never put markdown fences inside the file.` },
     { role: "user", content: `${requestContext}\n\nIris contract:\n${JSON.stringify(plan)}\n\nScoped Bob handoff for ${path}:\n${JSON.stringify(scopedArchitecture)}${context ? `\n\nFiles available for cross-file consistency:\n${context}` : ""}\n\nFINAL DELIVERABLE FOR THIS CALL: ${path} ONLY. Other agents own the other files. Do not output or re-create any other path.` },
-  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, { ...codeChatOptions(), ...(agentOptions.models ? { models: agentOptions.models } : {}) });
+  ], runtimeInteger(`OPENCODE_GO_${path === "index.html" ? "HTML" : path === "styles.css" ? "CSS" : "JS"}_MAX_TOKENS`, path === "index.html" ? 4_000 : path === "styles.css" ? 6_000 : 14_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Alex", phase: `implementation:${path}`, label: `Alex 正在生成 ${path}` }, report } : undefined, { ...codeChatOptions(), acceptIncomplete: (content) => isCompleteSingleFileArtifact(path, content), ...(agentOptions.models ? { models: agentOptions.models } : {}) });
   const content = normalizeArtifactContent(path, extractSingleFile(path, result.content));
   if (content.length < 40) throw new AgentOutputError(`${path} 输出过短，未形成可用工件`, result);
   if (content.length > 120_000) throw new AgentOutputError(`${path} 超过 120KB 安全上限`, result);
@@ -275,7 +317,7 @@ export async function runRayReviewAgent(prompt: string, plan: AgentPlan, archite
   const result = await chat([
     { role: "system", content: "You are Ray, a skeptical senior QA and code reviewer. Inspect the complete three-file application against every acceptance criterion and test plan. Return compact valid JSON only: passed (boolean), summary (string), functionalChecks (array of {name,passed,evidence}), issues (array of {severity: warning|error,file: index.html|styles.css|script.js|application,detail}). Mark error only for a concrete functional, runtime, safety, or acceptance failure. Do not invent missing behavior when code evidence proves it exists. Do not return markdown or reasoning." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nDeterministic checks:\n${JSON.stringify(deterministic)}\n\nArchetype contract checks:\n${JSON.stringify(productChecks)}\n\nFiles:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
-  ], runtimeInteger("OPENCODE_GO_RAY_MAX_TOKENS", 8_000, 1_500, 18_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:model", label: "Ray 正在核对验收标准和代码证据" }, report } : undefined);
+  ], runtimeInteger("OPENCODE_GO_RAY_MAX_TOKENS", 8_000, 1_500, 18_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:model", label: "Ray 正在核对验收标准和代码证据" }, report } : undefined, { acceptIncomplete: isCompleteJsonArtifact });
   const parsed = parseAgentJson(result, "Ray 没有返回可解析的质量工件");
   const functionalChecks = arrayObjects(parsed.functionalChecks).slice(0, 24).map((item, index) => ({
     name: stringValue(item.name, `功能检查 ${index + 1}`, 180),
@@ -307,7 +349,7 @@ export async function runRayRepairAgent(prompt: string, plan: AgentPlan, archite
   const result = await chat([
     { role: "system", content: "You are Ray acting as the repair engineer. Fix every concrete error in the QA report while preserving working behavior. Return only the complete changed files as markdown code blocks with exact {path=index.html}, {path=styles.css}, or {path=script.js} opening-line metadata. Do not return unchanged files, explanations, summaries, or JSON. Never put markdown fences inside a file." },
     { role: "user", content: `Original request:\n${prompt}\n\nIris contract:\n${JSON.stringify(plan)}\n\nBob architecture:\n${JSON.stringify(architecture)}\n\nQA report:\n${JSON.stringify(review)}\n\nCurrent files:\n--- index.html ---\n${files["index.html"]}\n--- styles.css ---\n${files["styles.css"]}\n--- script.js ---\n${files["script.js"]}` },
-  ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, codeChatOptions());
+  ], runtimeInteger("OPENCODE_GO_REPAIR_MAX_TOKENS", 16_000, 2_000, 24_000), budget, signal, report ? { stage: { agent: "Ray", phase: "quality:repair", label: "Ray 正在按失败证据修复工件" }, report } : undefined, { ...codeChatOptions(), acceptIncomplete: isCompleteRepairArtifact });
   const extracted = extractGeneratedFiles(result.content);
   if (Object.keys(extracted).length === 0) throw new AgentOutputError("Ray 没有返回可解析的修复文件", result);
   const changed: Partial<GeneratedFiles> = {};
@@ -324,6 +366,10 @@ function modelResult<T>(artifact: T, result: GatewayChatResult, startedAt: numbe
   return { artifact, raw: result.content, usage: result.usage, durationMs: Date.now() - startedAt, modelCalls: result.calls, model: result.model, attempts: result.attempts };
 }
 
+function recoveredResult<T>(artifact: T, reason: string): AgentModelResult<T> {
+  return { artifact, raw: "", usage: emptyUsage(), durationMs: 0, modelCalls: 0, model: "Nucleus deterministic recovery", attempts: [], recovery: { kind: "deterministic", reason } };
+}
+
 function attemptsFromAgentError(error: unknown): ModelAttempt[] {
   if (error instanceof AgentOutputError) return error.result.attempts;
   if (error instanceof ModelGatewayError) return error.attempts;
@@ -332,20 +378,10 @@ function attemptsFromAgentError(error: unknown): ModelAttempt[] {
 
 function parseAgentJson(result: GatewayChatResult, message: string): Record<string, unknown> {
   try {
-    return jsonObject(result.content);
+    return parseStructuredJsonObject(result.content);
   } catch {
     throw new AgentOutputError(message, result);
   }
-}
-
-function jsonObject(raw: string): Record<string, unknown> {
-  const stripped = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = stripped.indexOf("{");
-  const end = stripped.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("模型没有返回可解析的 JSON 工件");
-  const parsed = JSON.parse(stripped.slice(start, end + 1));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("模型 JSON 工件格式错误");
-  return parsed as Record<string, unknown>;
 }
 
 function arrayObjects(value: unknown): Record<string, unknown>[] {
@@ -382,7 +418,7 @@ export async function buildApp(prompt: string, plan: AgentPlan, currentFiles?: G
   const initial = await chat([
     { role: "system", content: `You are Alex, an elite frontend engineer. Do not reveal reasoning; start the final artifact immediately. Build a polished, fully interactive browser app with no build step. Output exactly one short Chinese summary wrapped in <summary>...</summary>, followed by exactly three markdown code blocks whose opening lines are:\n\`\`\`html{path=index.html}\n\`\`\`css{path=styles.css}\n\`\`\`js{path=script.js}\nRules: use semantic HTML; responsive CSS; vanilla JavaScript; no external libraries; no SVG; no placeholder buttons; every visible primary control must work; keep each file under 60KB; do not include style or script tags in index.html; index.html must contain complete body markup; all three files must be complete; keep the entire response compact and under 2800 tokens. Never place markdown fences inside a generated file.` },
     { role: "user", content: `Request: ${prompt}\nPlan: ${JSON.stringify(plan)}${existing}` },
-  ], 3600, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:initial", label: "正在实时生成页面、样式和交互" }, report: reportProgress } : undefined, codeChatOptions());
+  ], 3600, budget, signal, reportProgress ? { stage: { agent: "Alex", phase: "implementation:initial", label: "正在实时生成页面、样式和交互" }, report: reportProgress } : undefined, { ...codeChatOptions(), acceptIncomplete: isCompleteThreeFileArtifact });
   models.add(initial.model);
   let raw = initial.content;
   usage = addUsage(usage, initial.usage);

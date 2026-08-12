@@ -212,7 +212,7 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 
 2026-08-12 商业化加固版的实际验收结果：
 
-- Vitest 单元/集成/固定契约：**16 个文件，340/340**；
+- Vitest 单元/集成/固定契约：**17 个文件，351/351**；
 - 固定产品与安全 Eval：**3 个文件，283/283**；
 - 专项安全策略测试：**17/17**；
 - Chromium Playwright 真实浏览器 E2E：**9/9**；
@@ -224,6 +224,8 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 - Git diff、常见密钥格式和原始笔试 PDF 提交检查：在最终推送前再次执行。
 
 9 条 E2E 中包含一条不 Mock API 的真实本地 D1 控制面草稿创建/刷新恢复，以及一条 390×844 Touch Context 的 DOM 选择与局部修改。固定 Eval 验证的是确定性产品与安全契约，不等价于“任意需求生成成功率 100%”；压测结果也只是本机开发 Worker 基线，不是生产 SLA。
+
+生产故障复盘还验证了一个关键边界：失败 Run 只使用 15,060/180,000 Tokens，根因包括 GPT/GLM 端点协议错配、Bob JSON 工件协议和 SSE 终止事件，而不是 Token 不够。当前版本会让 GPT 使用 Responses API、GLM 使用 Chat Completions，能结构化救回完整工件，并让 Iris/Bob/Ray 在可恢复 Provider 故障时生成显式审计的保守工件；详细见 `docs/learning/20-why-unlimited-tokens-do-not-fix-generation.md`。
 
 ## 10. AI 工具使用说明
 

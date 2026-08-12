@@ -52,6 +52,80 @@ describe("model gateway", () => {
     expect(JSON.parse(String(requestInit?.body))).toMatchObject({ stream: true, stream_options: { include_usage: true } });
   });
 
+  it("routes GPT models through the Responses API and consumes its stream events", async () => {
+    const updates: Array<{ delta: string; totalChars: number }> = [];
+    let requestInit: RequestInit | undefined;
+    const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("https://provider.test/v1/responses");
+      requestInit = init;
+      return sse(
+        'data: {"type":"response.output_text.delta","delta":"Hello "}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"Responses"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}\n\n',
+      );
+    });
+    const result = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["gpt-5.6-luna"],
+      messages,
+      maxTokens: 1234,
+      requestTimeoutMs: 1000,
+      budget: budget(),
+      fetcher,
+      onDelta: ({ delta, totalChars }) => updates.push({ delta, totalChars }),
+    });
+
+    expect(result).toMatchObject({ content: "Hello Responses", model: "gpt-5.6-luna", usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 } });
+    expect(updates).toEqual([{ delta: "Hello ", totalChars: 6 }, { delta: "Responses", totalChars: 15 }]);
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({
+      model: "gpt-5.6-luna",
+      input: messages,
+      max_output_tokens: 1234,
+      stream: true,
+    });
+  });
+
+  it("treats a Responses API max-token event as truncation", async () => {
+    const fetcher = vi.fn(async () => sse(
+      'data: {"type":"response.output_text.delta","delta":"{\\"summary\\":\\"looks complete\\"}"}\n\n',
+      'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":4,"output_tokens":20,"total_tokens":24}}}\n\n',
+    ));
+    const error = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["gpt-5.6-luna"],
+      messages,
+      maxTokens: 20,
+      requestTimeoutMs: 1000,
+      budget: budget(),
+      fetcher,
+      acceptIncomplete: () => true,
+    }).catch((cause) => cause);
+    expect(error).toBeInstanceOf(ModelGatewayError);
+    expect(error.attempts[0]).toMatchObject({ status: "incomplete", usage: { totalTokens: 24 }, error: "Incomplete model stream (finish_reason=length)" });
+  });
+
+  it("does not recover content from an explicit Responses API failure", async () => {
+    const fetcher = vi.fn(async () => sse(
+      'data: {"type":"response.output_text.delta","delta":"{\\"summary\\":\\"must not pass\\"}"}\n\n',
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"generation failed"}}}\n\n',
+    ));
+    const error = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["gpt-5.6-luna"],
+      messages,
+      maxTokens: 200,
+      requestTimeoutMs: 1000,
+      budget: budget(),
+      fetcher,
+      acceptIncomplete: () => true,
+    }).catch((cause) => cause);
+    expect(error).toBeInstanceOf(ModelGatewayError);
+    expect(error.attempts[0]).toMatchObject({ status: "network_error", error: "Incomplete model stream (finish_reason=failed): generation failed" });
+  });
+
   it("fails over when a stream closes without a terminal event", async () => {
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
       const model = JSON.parse(String(init.body)).model;
@@ -65,6 +139,24 @@ describe("model gateway", () => {
     const result = await requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary", "fallback"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), fetcher });
     expect(result.content).toBe("complete");
     expect(result.attempts.map((item) => item.status)).toEqual(["incomplete", "success"]);
+  });
+
+  it("recovers a structurally complete artifact when the provider omits the terminal event", async () => {
+    const fetcher = vi.fn(async () => sse('data: {"choices":[{"delta":{"content":"{\\"summary\\":\\"complete\\"}"}}]}\n\n'));
+    const result = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["primary", "fallback"],
+      messages,
+      maxTokens: 200,
+      requestTimeoutMs: 1000,
+      budget: budget(),
+      fetcher,
+      acceptIncomplete: (content) => JSON.parse(content).summary === "complete",
+    });
+    expect(result).toMatchObject({ content: '{"summary":"complete"}', model: "primary", calls: 1 });
+    expect(result.attempts).toMatchObject([{ status: "recovered", error: expect.stringContaining("omitted its terminal event") }]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("rejects finish_reason length as a truncated completion", async () => {
