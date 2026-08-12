@@ -192,6 +192,33 @@ describe("model gateway", () => {
     expect(result.attempts.map((item) => item.status)).toEqual(["timeout", "success"]);
   });
 
+  it("fails over when a provider opens a stream but never returns usable content", async () => {
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(String(init.body)).model;
+      if (model === "fallback") return json({ choices: [{ message: { content: "first-token fallback" } }], usage: { total_tokens: 5 } });
+      return new Response(new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(init.signal instanceof AbortSignal ? init.signal.reason : new Error("aborted")), { once: true });
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+    });
+    const result = await requestChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test",
+      models: ["primary", "fallback"],
+      messages,
+      maxTokens: 20,
+      requestTimeoutMs: 1000,
+      firstTokenTimeoutMs: 5,
+      budget: budget(),
+      fetcher,
+    });
+    expect(result).toMatchObject({ model: "fallback", content: "first-token fallback" });
+    expect(result.attempts[0]).toMatchObject({ status: "timeout", firstTokenMs: null, outputChars: 0 });
+    expect(result.attempts[0].error).toContain("no usable content within 5ms");
+    expect(result.attempts[1]).toMatchObject({ status: "success" });
+  });
+
   it("does not hide authentication failures behind a fallback", async () => {
     const fetcher = vi.fn(async () => new Response("invalid key", { status: 401 }));
     await expect(requestChat({ baseUrl: "https://provider.test/v1", apiKey: "test", models: ["primary", "fallback"], messages, maxTokens: 20, requestTimeoutMs: 1000, budget: budget(), fetcher })).rejects.toMatchObject({ kind: "provider" });

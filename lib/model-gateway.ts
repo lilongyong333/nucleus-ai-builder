@@ -76,6 +76,7 @@ export async function requestChat(input: {
   messages: ChatMessage[];
   maxTokens: number;
   requestTimeoutMs: number;
+  firstTokenTimeoutMs?: number;
   fallbackReserveMs?: number;
   emptyRetriesPerModel?: number;
   budget: ModelBudget;
@@ -105,11 +106,21 @@ export async function requestChat(input: {
       const reserveForFallback = modelIndex < models.length - 1 ? Math.min(input.fallbackReserveMs ?? 16_000, Math.max(0, remainingMs - 1_000)) : 0;
       const timeoutMs = Math.max(1, Math.min(input.requestTimeoutMs, remainingMs - reserveForFallback));
       const timer = setTimeout(() => timeoutController.abort(new DOMException("Model request timed out", "TimeoutError")), timeoutMs);
-      const signal = input.signal ? AbortSignal.any([input.signal, timeoutController.signal]) : timeoutController.signal;
+      const firstTokenController = new AbortController();
+      const firstTokenTimeoutMs = Math.max(1, Math.min(input.firstTokenTimeoutMs ?? timeoutMs, timeoutMs));
+      const firstTokenTimer = setTimeout(
+        () => firstTokenController.abort(new DOMException("Model did not return content before the first-token deadline", "TimeoutError")),
+        firstTokenTimeoutMs,
+      );
+      const requestSignals = [timeoutController.signal, firstTokenController.signal, ...(input.signal ? [input.signal] : [])];
+      const signal = AbortSignal.any(requestSignals);
       let firstTokenMs: number | null = null;
       let outputChars = 0;
       const reportDelta = (update: ModelStreamUpdate) => {
-        if (firstTokenMs === null && update.delta.length > 0) firstTokenMs = Date.now() - attemptStartedAt;
+        if (firstTokenMs === null && update.delta.length > 0) {
+          firstTokenMs = Date.now() - attemptStartedAt;
+          clearTimeout(firstTokenTimer);
+        }
         outputChars = update.totalChars;
         input.onDelta?.(update);
       };
@@ -150,14 +161,17 @@ export async function requestChat(input: {
           && data.finishReason === null
           && safelyAcceptIncomplete(input.acceptIncomplete, content);
         const completed = Boolean(content) && (data.completed || artifactRecovered);
-        const streamTimedOut = timeoutController.signal.aborted;
+        const firstTokenTimedOut = firstTokenController.signal.aborted;
+        const streamTimedOut = timeoutController.signal.aborted || firstTokenTimedOut;
         const streamErrorDetail = data.streamError instanceof Error ? data.streamError.message : null;
         const completionError = artifactRecovered
           ? `Recovered a structurally complete artifact after ${streamTimedOut ? "the stream timed out" : "the provider omitted its terminal event"}`
           : content
             ? `Incomplete model stream${data.finishReason ? ` (finish_reason=${data.finishReason})` : streamTimedOut ? " (request timed out)" : " (missing terminal event)"}${streamErrorDetail ? `: ${streamErrorDetail}` : ""}`
             : streamTimedOut
-              ? "Model request timed out before a usable artifact was completed"
+              ? firstTokenTimedOut
+                ? `Model returned no usable content within ${firstTokenTimeoutMs}ms`
+                : "Model request timed out before a usable artifact was completed"
               : streamErrorDetail ?? "Empty model response";
         const status: ModelAttemptStatus = completed
           ? artifactRecovered ? "recovered" : "success"
@@ -182,14 +196,20 @@ export async function requestChat(input: {
           attempts.push(attempt(model, "cancelled", attemptStartedAt, firstTokenMs, outputChars, null, emptyUsage(), detail));
           throw new ModelGatewayError("The model request was cancelled", attempts, "provider");
         }
-        const timedOut = timeoutController.signal.aborted;
+        const firstTokenTimedOut = firstTokenController.signal.aborted;
+        const timedOut = timeoutController.signal.aborted || firstTokenTimedOut;
         const detail = error instanceof Error ? error.message : "Network request failed";
-        lastError = timedOut ? `Model ${model} timed out after ${timeoutMs}ms` : `Model ${model} network request failed: ${detail}`;
+        lastError = timedOut
+          ? firstTokenTimedOut
+            ? `Model ${model} returned no usable content within ${firstTokenTimeoutMs}ms`
+            : `Model ${model} timed out after ${timeoutMs}ms`
+          : `Model ${model} network request failed: ${detail}`;
         attempts.push(attempt(model, timedOut ? "timeout" : "network_error", attemptStartedAt, firstTokenMs, outputChars, null, emptyUsage(), detail));
         if (modelIndex === models.length - 1) throw new ModelGatewayError(lastError, attempts, "provider");
         break;
       } finally {
         clearTimeout(timer);
+        clearTimeout(firstTokenTimer);
       }
     }
   }

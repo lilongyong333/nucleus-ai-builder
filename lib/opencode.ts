@@ -77,12 +77,13 @@ export type GenerationProgress = {
 
 type ProgressStage = Pick<GenerationProgress, "agent" | "phase" | "label">;
 
-type ChatOptions = { models?: string[]; requestTimeoutMs?: number; fallbackReserveMs?: number; acceptIncomplete?: (content: string) => boolean };
+type ChatOptions = { models?: string[]; requestTimeoutMs?: number; firstTokenTimeoutMs?: number; fallbackReserveMs?: number; acceptIncomplete?: (content: string) => boolean };
 
 function codeChatOptions(): ChatOptions {
   return {
     models: activeCodeModels(),
     requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 170_000, 8_000, 180_000),
+    firstTokenTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_FIRST_TOKEN_TIMEOUT_MS", 75_000, 8_000, 120_000),
     fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 50_000, 5_000, 90_000),
   };
 }
@@ -98,6 +99,7 @@ async function chat(messages: ChatMessage[], maxTokens: number, budget: ModelBud
     messages,
     maxTokens,
     requestTimeoutMs: options.requestTimeoutMs ?? runtimeInteger("OPENCODE_GO_REQUEST_TIMEOUT_MS", 26_000, 5_000, 45_000),
+    firstTokenTimeoutMs: options.firstTokenTimeoutMs,
     fallbackReserveMs: options.fallbackReserveMs ?? runtimeInteger("OPENCODE_GO_FALLBACK_RESERVE_MS", 18_000, 5_000, 30_000),
     emptyRetriesPerModel: 0,
     budget,
