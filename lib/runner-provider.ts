@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { completeRunnerJob, markRunnerJobRunning, recordRuntimeEvidence } from "./app-platform-db";
 import type { AppManifest, GeneratedFiles, RunnerJob } from "./types";
-import { buildSandboxContract, SandboxPolicyError, signRunnerPayload } from "./sandbox-policy";
+import { buildSandboxContract, SandboxPolicyError, signRunnerPayload, verifyRunnerPayloadSignature } from "./sandbox-policy";
 import { createInstallationAccessToken } from "./github-app";
+import { githubLegacyPatToken } from "./github-automation";
 
 export class RunnerProviderError extends Error {
   constructor(message: string, readonly status = 500) {
@@ -16,7 +17,7 @@ export async function dispatchPlaywrightJob(job: RunnerJob, callbackOrigin: stri
   if (job.status !== "queued") return job;
   const runtime = env as unknown as Record<string, unknown>;
   const installationId = stringValue(runtime.GITHUB_RUNNER_INSTALLATION_ID);
-  const token = stringValue(runtime.GITHUB_AUTOMATION_TOKEN) || (installationId ? await createInstallationAccessToken(installationId) : "");
+  const token = installationId ? await createInstallationAccessToken(installationId) : githubLegacyPatToken() ?? "";
   const repository = stringValue(runtime.GITHUB_RUNNER_REPOSITORY);
   const ref = stringValue(runtime.GITHUB_RUNNER_REF) || "main";
   if (!token || !repository || !stringValue(runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN)) throw new RunnerProviderError("云端 Playwright Runner 尚未完成服务端配置", 409);
@@ -78,7 +79,11 @@ export async function dispatchContainerJob(job: RunnerJob, callbackOrigin: strin
     files: artifact.files,
     dependencies: artifact.manifest.dependencies,
     functions: artifact.manifest.backend.functions,
-    callback: { url: `${callbackOrigin.replace(/\/$/, "")}/api/runner/callback`, bearerToken: callbackToken },
+    callback: {
+      url: `${callbackOrigin.replace(/\/$/, "")}/api/runner/callback`,
+      bearerToken: callbackToken,
+      signature: { algorithm: "hmac-sha256", timestampHeader: "X-Nucleus-Timestamp", signatureHeader: "X-Nucleus-Signature", format: "v1=<hex(hmac(secret, timestamp + '.' + rawBody))>" },
+    },
     contract,
   });
   const timestamp = String(Math.floor(Date.now() / 1_000));
@@ -101,11 +106,14 @@ export async function acceptRunnerCallback(request: Request): Promise<RunnerJob>
   const expected = stringValue(runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN);
   const supplied = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
   if (!expected || !await equalSecret(expected, supplied)) throw new RunnerProviderError("Runner callback 未授权", 401);
-  const body = await request.json() as { jobId?: string; status?: "passed" | "failed"; result?: Record<string, unknown> };
+  const rawBody = await request.text();
+  if (!await verifyRunnerPayloadSignature(rawBody, expected, request.headers.get("x-nucleus-timestamp"), request.headers.get("x-nucleus-signature"))) throw new RunnerProviderError("Runner callback 签名无效、已过期或疑似重放", 401);
+  let body: { jobId?: string; status?: "passed" | "failed"; result?: Record<string, unknown> };
+  try { body = JSON.parse(rawBody) as typeof body; } catch { throw new RunnerProviderError("Runner callback JSON 格式错误", 400); }
   if (typeof body.jobId !== "string" || (body.status !== "passed" && body.status !== "failed")) throw new RunnerProviderError("Runner callback 格式错误", 400);
   const result = body.result && typeof body.result === "object" ? body.result : {};
   const job = await completeRunnerJob(body.jobId, body.status, result);
-  if (!job) throw new RunnerProviderError("Runner Job 不存在", 404);
+  if (!job) throw new RunnerProviderError("Runner Job 不存在或已完成，拒绝重复回调", 409);
   const summary = typeof result.summary === "string" ? result.summary : job.kind === "playwright"
     ? body.status === "passed" ? "云端 Playwright 验收通过" : "云端 Playwright 验收失败"
     : body.status === "passed" ? "外部容器构建与运行通过" : "外部容器构建或运行失败";

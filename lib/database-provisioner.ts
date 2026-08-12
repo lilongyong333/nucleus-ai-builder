@@ -1,11 +1,19 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "./db";
+import { databaseSchemaRevision, provisioningRetryDelayMs } from "./database-schema";
 import type { AppDatabaseResource, AppManifest, AppRecord, ProvisioningEvent } from "./types";
 
 type D1Row = Record<string, string | number | null>;
 type CloudflareEnvelope<T> = { success?: boolean; result?: T; errors?: Array<{ code?: number; message?: string }>; messages?: Array<{ message?: string }> };
 type CloudflareDatabase = { uuid: string; name: string; primary_location_hint?: string };
 type RemoteQueryResult = { results?: D1Row[]; meta?: Record<string, unknown>; success?: boolean; error?: string };
+type DatabaseExportResult = {
+  at_bookmark?: string;
+  error?: string;
+  status?: "complete" | "error";
+  success?: boolean;
+  result?: { filename?: string; signed_url?: string };
+};
 
 export class DatabaseProvisioningError extends Error {
   constructor(message: string, readonly status = 400, readonly retryable = false) {
@@ -51,21 +59,31 @@ export async function ensureProjectDatabase(projectId: string): Promise<AppDatab
   const d1 = controlDatabase();
   const now = new Date().toISOString();
   const databaseName = physicalDatabaseName(projectId);
-  await d1.prepare(`INSERT INTO app_database_resources (project_id,provider,isolation,status,external_database_id,database_name,location_hint,schema_version,last_migration_at,last_backup_at,retention_until,last_error,created_at,updated_at) VALUES (?,'cloudflare-d1','physical-database','pending',NULL,?,NULL,0,NULL,NULL,NULL,NULL,?,?) ON CONFLICT(project_id) DO NOTHING`).bind(projectId, databaseName, now, now).run();
+  const desiredSchemaVersion = await databaseSchemaRevision(manifest);
+  await d1.prepare(`INSERT INTO app_database_resources (project_id,provider,isolation,status,external_database_id,database_name,location_hint,schema_version,desired_schema_version,attempt_count,next_retry_at,lease_expires_at,last_migration_at,last_backup_at,retention_until,last_error,created_at,updated_at) VALUES (?,'cloudflare-d1','physical-database','pending',NULL,?,NULL,0,?,0,NULL,NULL,NULL,NULL,NULL,NULL,?,?) ON CONFLICT(project_id) DO UPDATE SET desired_schema_version=excluded.desired_schema_version,database_name=excluded.database_name,updated_at=CASE WHEN app_database_resources.desired_schema_version<>excluded.desired_schema_version THEN excluded.updated_at ELSE app_database_resources.updated_at END`).bind(projectId, databaseName, desiredSchemaVersion, now, now).run();
 
   const config = configuration();
   if (!config) {
-    await d1.prepare(`UPDATE app_database_resources SET status='configuration-required',last_error='缺少 CLOUDFLARE_ACCOUNT_ID 或 CLOUDFLARE_D1_API_TOKEN',updated_at=? WHERE project_id=? AND status<>'ready'`).bind(now, projectId).run();
+    await d1.prepare(`UPDATE app_database_resources SET status='configuration-required',last_error='缺少 CLOUDFLARE_ACCOUNT_ID 或 CLOUDFLARE_D1_API_TOKEN',next_retry_at=NULL,lease_expires_at=NULL,updated_at=? WHERE project_id=? AND status NOT IN ('ready','deletion-scheduled','deleted')`).bind(now, projectId).run();
     await recordProvisioningEvent(projectId, "create", "configuration-required", { missing: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_API_TOKEN"] }, now);
     await updateManifestDatabaseState(projectId, "configuration-required");
     return (await getDatabaseResource(projectId))!;
   }
 
-  const current = await getDatabaseResource(projectId);
-  const desiredSchemaVersion = await schemaRevision(manifest);
-  if (current?.status === "ready" && current.externalDatabaseId && current.schemaVersion === desiredSchemaVersion) return current;
-  if (current?.status === "provisioning") return current;
-  const lock = await d1.prepare(`UPDATE app_database_resources SET status='provisioning',location_hint=?,last_error=NULL,retention_until=NULL,updated_at=? WHERE project_id=? AND status IN ('pending','error','configuration-required','ready')`).bind(config.locationHint, now, projectId).run();
+  let current = await getDatabaseResource(projectId);
+  if (!current) throw new DatabaseProvisioningError("数据库资源初始化失败", 500, true);
+  if (current.status === "deletion-scheduled" || current.status === "deleted") throw new DatabaseProvisioningError("数据库处于删除生命周期，必须先取消删除计划", 409);
+  if (current.status === "ready" && current.externalDatabaseId && current.schemaVersion === desiredSchemaVersion) {
+    await updateManifestDatabaseState(projectId, "ready");
+    return current;
+  }
+  if (current.status === "provisioning" && current.leaseExpiresAt && Date.parse(current.leaseExpiresAt) > Date.now()) return current;
+  if (current.status === "provisioning") {
+    await d1.prepare(`UPDATE app_database_resources SET status='error',last_error='上一次 Provisioner 租约超时，已自动回收',lease_expires_at=NULL,next_retry_at=?,updated_at=? WHERE project_id=? AND status='provisioning'`).bind(now, now, projectId).run();
+    current = (await getDatabaseResource(projectId))!;
+  }
+  const leaseExpiresAt = new Date(Date.now() + 4 * 60_000).toISOString();
+  const lock = await d1.prepare(`UPDATE app_database_resources SET status='provisioning',location_hint=?,desired_schema_version=?,attempt_count=attempt_count+1,next_retry_at=NULL,lease_expires_at=?,last_error=NULL,retention_until=NULL,updated_at=? WHERE project_id=? AND status IN ('pending','error','configuration-required','ready')`).bind(config.locationHint, desiredSchemaVersion, leaseExpiresAt, now, projectId).run();
   if (Number(lock.meta.changes ?? 0) !== 1) return (await getDatabaseResource(projectId))!;
 
   const eventId = await startProvisioningEvent(projectId, current?.externalDatabaseId ? "migrate" : "create", { databaseName });
@@ -86,7 +104,7 @@ export async function ensureProjectDatabase(projectId: string): Promise<AppDatab
     const schemaVersion = await migratePhysicalDatabase(config, externalId, manifest);
     const migratedRecords = await migrateLogicalRecords(config, externalId, manifest, projectId);
     const completedAt = new Date().toISOString();
-    await d1.prepare(`UPDATE app_database_resources SET status='ready',schema_version=?,last_migration_at=?,last_error=NULL,updated_at=? WHERE project_id=?`).bind(schemaVersion, completedAt, completedAt, projectId).run();
+    await d1.prepare(`UPDATE app_database_resources SET status='ready',schema_version=?,desired_schema_version=?,attempt_count=0,next_retry_at=NULL,lease_expires_at=NULL,last_migration_at=?,last_error=NULL,updated_at=? WHERE project_id=?`).bind(schemaVersion, schemaVersion, completedAt, completedAt, projectId).run();
     const replayedRecords = await migrateLogicalRecords(config, externalId, manifest, projectId);
     await d1.batch([
       d1.prepare(`INSERT INTO backup_policies (project_id,enabled,interval_hours,retention_days,last_run_at,next_run_at,created_at,updated_at) VALUES (?,1,24,30,NULL,?,?,?) ON CONFLICT(project_id) DO NOTHING`).bind(projectId, new Date(Date.now() + 86_400_000).toISOString(), completedAt, completedAt),
@@ -97,13 +115,42 @@ export async function ensureProjectDatabase(projectId: string): Promise<AppDatab
   } catch (error) {
     const message = error instanceof Error ? error.message : "物理数据库创建失败";
     const failedAt = new Date().toISOString();
+    const failedResource = await getDatabaseResource(projectId);
+    const nextRetryAt = new Date(Date.now() + provisioningRetryDelayMs(failedResource?.attemptCount ?? 1)).toISOString();
     await d1.batch([
-      d1.prepare(`UPDATE app_database_resources SET status='error',last_error=?,updated_at=? WHERE project_id=?`).bind(message.slice(0, 800), failedAt, projectId),
-      d1.prepare(`UPDATE provisioning_events SET status='failed',detail_json=?,completed_at=? WHERE id=?`).bind(JSON.stringify({ databaseName, error: message.slice(0, 800) }), failedAt, eventId),
+      d1.prepare(`UPDATE app_database_resources SET status='error',last_error=?,next_retry_at=?,lease_expires_at=NULL,updated_at=? WHERE project_id=?`).bind(message.slice(0, 800), nextRetryAt, failedAt, projectId),
+      d1.prepare(`UPDATE provisioning_events SET status='failed',detail_json=?,completed_at=? WHERE id=?`).bind(JSON.stringify({ databaseName, error: message.slice(0, 800), nextRetryAt }), failedAt, eventId),
     ]);
     await updateManifestDatabaseState(projectId, "error");
     throw error instanceof DatabaseProvisioningError ? error : new DatabaseProvisioningError(message, 502, true);
   }
+}
+
+export async function reconcileProjectDatabases(limit = 5): Promise<{ configured: boolean; attempted: number; ready: string[]; failed: Array<{ projectId: string; error: string }>; skipped: string[] }> {
+  await ensureSchema();
+  const boundedLimit = Math.max(1, Math.min(20, Math.floor(limit)));
+  const now = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - 10 * 60_000).toISOString();
+  await controlDatabase().prepare(`UPDATE app_database_resources SET status='error',last_error='Provisioner 租约过期，等待自动重试',lease_expires_at=NULL,next_retry_at=?,updated_at=? WHERE status='provisioning' AND ((lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (lease_expires_at IS NULL AND updated_at<=?))`).bind(now, now, now, staleBefore).run();
+  if (!configuration()) {
+    await controlDatabase().prepare(`UPDATE app_database_resources SET status='configuration-required',last_error='缺少 CLOUDFLARE_ACCOUNT_ID 或 CLOUDFLARE_D1_API_TOKEN',next_retry_at=NULL,lease_expires_at=NULL,updated_at=? WHERE status IN ('pending','error')`).bind(now).run();
+    return { configured: false, attempted: 0, ready: [], failed: [], skipped: [] };
+  }
+  const candidates = await controlDatabase().prepare(`SELECT project_id FROM app_database_resources WHERE ((status IN ('pending','error','configuration-required') AND (next_retry_at IS NULL OR next_retry_at<=?)) OR (status='ready' AND desired_schema_version<>schema_version)) ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'error' THEN 1 WHEN 'configuration-required' THEN 2 ELSE 3 END,updated_at ASC LIMIT ?`).bind(now, boundedLimit).all<D1Row>();
+  const ready: string[] = [];
+  const failed: Array<{ projectId: string; error: string }> = [];
+  const skipped: string[] = [];
+  for (const row of candidates.results ?? []) {
+    const candidateProjectId = String(row.project_id);
+    try {
+      const resource = await ensureProjectDatabase(candidateProjectId);
+      if (resource.status === "ready") ready.push(candidateProjectId);
+      else skipped.push(candidateProjectId);
+    } catch (error) {
+      failed.push({ projectId: candidateProjectId, error: error instanceof Error ? error.message : "Provisioner 调和失败" });
+    }
+  }
+  return { configured: true, attempted: candidates.results?.length ?? 0, ready, failed, skipped };
 }
 
 export async function scheduleProjectDatabaseDeletion(projectId: string, retentionDays = 30): Promise<AppDatabaseResource> {
@@ -119,7 +166,8 @@ export async function scheduleProjectDatabaseDeletion(projectId: string, retenti
 
 export async function cancelProjectDatabaseDeletion(projectId: string): Promise<AppDatabaseResource> {
   await ensureSchema();
-  const row = await controlDatabase().prepare(`UPDATE app_database_resources SET status=CASE WHEN external_database_id IS NULL THEN 'configuration-required' ELSE 'ready' END,retention_until=NULL,updated_at=? WHERE project_id=? AND status='deletion-scheduled' RETURNING *`).bind(new Date().toISOString(), projectId).first<D1Row>();
+  const missingResourceStatus = configuration() ? "pending" : "configuration-required";
+  const row = await controlDatabase().prepare(`UPDATE app_database_resources SET status=CASE WHEN external_database_id IS NULL THEN ? ELSE 'ready' END,retention_until=NULL,updated_at=? WHERE project_id=? AND status='deletion-scheduled' RETURNING *`).bind(missingResourceStatus, new Date().toISOString(), projectId).first<D1Row>();
   if (!row) throw new DatabaseProvisioningError("没有待取消的数据库删除计划", 409);
   return resourceFromRow(row);
 }
@@ -127,7 +175,6 @@ export async function cancelProjectDatabaseDeletion(projectId: string): Promise<
 export async function deleteDueProjectDatabases(limit = 20): Promise<{ deleted: string[]; failed: Array<{ projectId: string; error: string }> }> {
   await ensureSchema();
   const config = configuration();
-  if (!config) throw new DatabaseProvisioningError("数据库清理任务缺少 Cloudflare Provisioner 凭据", 503);
   const result = await controlDatabase().prepare(`SELECT * FROM app_database_resources WHERE status='deletion-scheduled' AND retention_until<=? ORDER BY retention_until ASC LIMIT ?`).bind(new Date().toISOString(), Math.max(1, Math.min(100, limit))).all<D1Row>();
   const deleted: string[] = [];
   const failed: Array<{ projectId: string; error: string }> = [];
@@ -135,17 +182,20 @@ export async function deleteDueProjectDatabases(limit = 20): Promise<{ deleted: 
     const resource = resourceFromRow(row);
     const eventId = await startProvisioningEvent(resource.projectId, "delete", { externalDatabaseId: resource.externalDatabaseId });
     try {
-      if (resource.externalDatabaseId) await cloudflareRequest<unknown>(config, `/d1/database/${encodeURIComponent(resource.externalDatabaseId)}`, { method: "DELETE" });
+      if (resource.externalDatabaseId) {
+        if (!config) throw new DatabaseProvisioningError("数据库清理任务缺少 Cloudflare Provisioner 凭据", 503, true);
+        await cloudflareRequest<unknown>(config, `/d1/database/${encodeURIComponent(resource.externalDatabaseId)}`, { method: "DELETE" });
+      }
       const now = new Date().toISOString();
       await controlDatabase().batch([
-        controlDatabase().prepare(`UPDATE app_database_resources SET status='deleted',external_database_id=NULL,last_error=NULL,updated_at=? WHERE project_id=?`).bind(now, resource.projectId),
+        controlDatabase().prepare(`UPDATE app_database_resources SET status='deleted',external_database_id=NULL,next_retry_at=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=? WHERE project_id=?`).bind(now, resource.projectId),
         controlDatabase().prepare(`UPDATE provisioning_events SET status='completed',completed_at=? WHERE id=?`).bind(now, eventId),
       ]);
       deleted.push(resource.projectId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除失败";
       await controlDatabase().batch([
-        controlDatabase().prepare(`UPDATE app_database_resources SET status='error',last_error=?,updated_at=? WHERE project_id=?`).bind(message.slice(0, 800), new Date().toISOString(), resource.projectId),
+        controlDatabase().prepare(`UPDATE app_database_resources SET status='deletion-scheduled',last_error=?,updated_at=? WHERE project_id=?`).bind(message.slice(0, 800), new Date().toISOString(), resource.projectId),
         controlDatabase().prepare(`UPDATE provisioning_events SET status='failed',detail_json=?,completed_at=? WHERE id=?`).bind(JSON.stringify({ error: message.slice(0, 800) }), new Date().toISOString(), eventId),
       ]);
       failed.push({ projectId: resource.projectId, error: message });
@@ -222,8 +272,41 @@ export async function restorePhysicalBookmark(resource: AppDatabaseResource, boo
   await cloudflareRequest<unknown>(config, `/d1/database/${encodeURIComponent(resource.externalDatabaseId)}/time_travel/restore?bookmark=${encodeURIComponent(bookmark)}`, { method: "POST" });
 }
 
+export async function exportPhysicalDatabaseSql(resource: AppDatabaseResource): Promise<{ response: Response; bookmark: string; filename: string }> {
+  const config = requireConfiguration();
+  if (!resource.externalDatabaseId) throw new DatabaseProvisioningError("物理数据库 ID 不存在", 409);
+  const path = `/d1/database/${encodeURIComponent(resource.externalDatabaseId)}/export`;
+  let bookmark: string | null = null;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const exportState: DatabaseExportResult = await cloudflareRequest<DatabaseExportResult>(config, path, {
+      method: "POST",
+      body: { output_format: "polling", ...(bookmark ? { current_bookmark: bookmark } : {}) },
+    });
+    if (exportState.status === "error" || exportState.success === false || exportState.error) throw new DatabaseProvisioningError(exportState.error || "D1 SQL 导出失败", 502, true);
+    bookmark = exportState.at_bookmark ?? bookmark;
+    const signedUrl = exportState.result?.signed_url;
+    if (exportState.status === "complete" && signedUrl) {
+      let url: URL;
+      try { url = new URL(signedUrl); } catch { throw new DatabaseProvisioningError("D1 SQL 导出地址无效", 502, true); }
+      if (url.protocol !== "https:") throw new DatabaseProvisioningError("D1 SQL 导出地址必须使用 HTTPS", 502, true);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new DOMException("D1 export download timed out", "TimeoutError")), 60_000);
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok || !response.body) throw new DatabaseProvisioningError(`D1 SQL 下载失败：${response.status}`, 502, true);
+        return { response, bookmark: bookmark ?? "", filename: exportState.result?.filename ?? `${resource.databaseName}.sql` };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (!bookmark) throw new DatabaseProvisioningError("D1 SQL 导出没有返回轮询书签", 502, true);
+    await delay(Math.min(1_000, 250 + attempt * 50));
+  }
+  throw new DatabaseProvisioningError("D1 SQL 导出在轮询时限内未完成，将由下一次维护任务重试", 504, true);
+}
+
 async function migratePhysicalDatabase(config: NonNullable<ReturnType<typeof configuration>>, databaseId: string, manifest: AppManifest): Promise<number> {
-  const schemaVersion = await schemaRevision(manifest);
+  const schemaVersion = await databaseSchemaRevision(manifest);
   await remoteQuery(config, databaseId, `CREATE TABLE IF NOT EXISTS _nucleus_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)`, []);
   for (const collection of manifest.database.collections) {
     const table = collectionTable(collection.name);
@@ -243,22 +326,35 @@ async function migratePhysicalDatabase(config: NonNullable<ReturnType<typeof con
 }
 
 async function migrateLogicalRecords(config: NonNullable<ReturnType<typeof configuration>>, databaseId: string, manifest: AppManifest, projectId: string): Promise<number> {
-  const legacy = await controlDatabase().prepare(`SELECT * FROM app_records WHERE project_id=? AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 5000`).bind(projectId).all<D1Row>();
   const collections = new Map(manifest.database.collections.map((collection) => [collection.name, collection]));
-  const statements: Array<{ sql: string; params: unknown[] }> = [];
-  for (const row of legacy.results ?? []) {
-    const collectionName = String(row.collection);
-    const collection = collections.get(collectionName);
-    if (!collection) continue;
-    let data: Record<string, unknown> = {};
-    try { data = typeof row.data_json === "string" ? JSON.parse(row.data_json) as Record<string, unknown> : {}; } catch { continue; }
-    const fields = collection.fields.map((field) => field.name).filter((name) => Object.prototype.hasOwnProperty.call(data, name)).map(safeIdentifier);
-    const columns = ["id", "owner_subject", "data_json", "revision", "created_at", "updated_at", ...fields].map(quoted).join(",");
-    const params = [String(row.id), String(row.owner_subject), JSON.stringify(data), Number(row.revision), String(row.created_at), String(row.updated_at), ...fields.map((field) => encodeFieldValue(data[field]))];
-    statements.push({ sql: `INSERT INTO ${collectionTable(collectionName)} (${columns}) VALUES (${params.map(() => "?").join(",")}) ON CONFLICT(id) DO NOTHING`, params });
+  let migrated = 0;
+  let cursorCreatedAt = "";
+  let cursorId = "";
+  while (true) {
+    const legacy = await controlDatabase().prepare(`SELECT * FROM app_records WHERE project_id=? AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at ASC,id ASC LIMIT 500`).bind(projectId, cursorCreatedAt, cursorCreatedAt, cursorId).all<D1Row>();
+    const rows = legacy.results ?? [];
+    if (rows.length === 0) break;
+    const statements: Array<{ sql: string; params: unknown[] }> = [];
+    for (const row of rows) {
+      cursorCreatedAt = String(row.created_at);
+      cursorId = String(row.id);
+      const collectionName = String(row.collection);
+      const collection = collections.get(collectionName);
+      if (!collection) continue;
+      let data: Record<string, unknown> = {};
+      try { data = typeof row.data_json === "string" ? JSON.parse(row.data_json) as Record<string, unknown> : {}; } catch { continue; }
+      const fields = collection.fields.map((field) => field.name).filter((name) => Object.prototype.hasOwnProperty.call(data, name)).map(safeIdentifier);
+      const table = collectionTable(collectionName);
+      const columns = ["id", "owner_subject", "data_json", "revision", "deleted_at", "created_at", "updated_at", ...fields].map(quoted).join(",");
+      const params = [String(row.id), String(row.owner_subject), JSON.stringify(data), Number(row.revision), row.deleted_at ? String(row.deleted_at) : null, String(row.created_at), String(row.updated_at), ...fields.map((field) => encodeFieldValue(data[field]))];
+      const updates = ["owner_subject=excluded.owner_subject", "data_json=excluded.data_json", "revision=excluded.revision", "deleted_at=excluded.deleted_at", "updated_at=excluded.updated_at", ...fields.map((field) => `${quoted(field)}=excluded.${quoted(field)}`)];
+      statements.push({ sql: `INSERT INTO ${table} (${columns}) VALUES (${params.map(() => "?").join(",")}) ON CONFLICT(id) DO UPDATE SET ${updates.join(",")} WHERE excluded.revision>${table}.revision`, params });
+    }
+    for (let offset = 0; offset < statements.length; offset += 50) await remoteBatch(config, databaseId, statements.slice(offset, offset + 50));
+    migrated += statements.length;
+    if (rows.length < 500) break;
   }
-  for (let offset = 0; offset < statements.length; offset += 50) await remoteBatch(config, databaseId, statements.slice(offset, offset + 50));
-  return statements.length;
+  return migrated;
 }
 
 async function queryProjectDatabase(resource: AppDatabaseResource, sql: string, params: unknown[]): Promise<{ rows: D1Row[]; meta: Record<string, unknown> }> {
@@ -351,6 +447,10 @@ function resourceFromRow(row: D1Row): AppDatabaseResource {
     databaseName: String(row.database_name),
     locationHint: row.location_hint ? String(row.location_hint) : null,
     schemaVersion: Number(row.schema_version ?? 0),
+    desiredSchemaVersion: Number(row.desired_schema_version ?? row.schema_version ?? 0),
+    attemptCount: Number(row.attempt_count ?? 0),
+    nextRetryAt: row.next_retry_at ? String(row.next_retry_at) : null,
+    leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
     lastMigrationAt: row.last_migration_at ? String(row.last_migration_at) : null,
     lastBackupAt: row.last_backup_at ? String(row.last_backup_at) : null,
     retentionUntil: row.retention_until ? String(row.retention_until) : null,
@@ -415,12 +515,6 @@ function encodeFieldValue(value: unknown): string | number | null {
   return JSON.stringify(value);
 }
 
-async function schemaRevision(manifest: AppManifest): Promise<number> {
-  const encoded = new TextEncoder().encode(JSON.stringify(manifest.database.collections));
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
-  return ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
-}
-
 function requireConfiguration(): NonNullable<ReturnType<typeof configuration>> {
   const config = configuration();
   if (!config) throw new DatabaseProvisioningError("物理数据库 Provisioner 尚未配置", 503);
@@ -429,4 +523,8 @@ function requireConfiguration(): NonNullable<ReturnType<typeof configuration>> {
 
 function stringEnv(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

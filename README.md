@@ -15,7 +15,7 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 ## 已实现功能
 
 - 一句话创建 HTML / CSS / JavaScript 三文件应用
-- OpenCode Go 真实调用，默认 `glm-5.2`，失败时降级到 `qwen3.5-plus`
+- OpenCode Go 真实调用：规划/审查默认 `gpt-5.6-luna`，代码默认 `glm-5.2`，两条路由互为受控回退
 - Iris 使用确定性本地 SOP 产出结构化计划；正常新建只需一次代码模型调用
 - 单次请求超时与整轮调用/Token/时间预算，最终实际模型写入审计
 - 智能体工作时间线和结构化产品计划
@@ -43,10 +43,14 @@ Nucleus 是一个面向非技术用户的 AI 应用生成器。游客可直接�
 - 组织成员、RBAC、发布审批、Token/模型调用/数据库写入用量控制
 - GitHub Iris/Bob/Alex/Ray 分支自动化与合并 Provider
 - GitHub Actions Playwright 和外部 npm/pip/system/container Runner 协议；缺少凭据时明确显示 `configuration-required`
-- 可选的每应用物理 D1 Provisioner：创建、Schema Migration、Time Travel 书签、延迟删除与审计事件
-- GitHub App 安装/OAuth 绑定与短期 Installation Token，保留手动 Provider 作为兼容路径
-- Stripe Checkout、Billing Portal、签名 Webhook、幂等事件与用量 Meter 导出骨架
-- 邮件通知 Provider、生产维护定时任务、服务事件/SLO 评估、只读负载测试与固定安全 Eval
+- 每应用物理 D1 Provisioner：生成后自动异步创建、Schema 摘要调和、租约回收、指数重试、分页迁移、Time Travel、延迟删除和审计
+- 可选 R2 长期数据库归档：物理 D1 SQL Export、逻辑快照、对象保留期清理和归档错误证据
+- GitHub App 安装/OAuth 绑定与短期 Installation Token；旧 PAT 默认禁用，只能显式开启兼容模式
+- Stripe Checkout、Billing Portal、签名 Webhook、幂等事件、订阅权益降级、发票镜像与 Meter Event 导出
+- 邮件/告警 Outbox、Resend/Sentry/Webhook 重试与去重、生产维护任务和可配置 SLO
+- Runner 双重认证、五分钟 HMAC 防重放、终态不可重复提交，以及依赖投毒/元数据 SSRF/容器 Socket 防护
+- 触屏 DOM 选择与移动端底部可视化编辑器；支持文字、尺寸、间距、Display 和 Grid 局部修改
+- 240 个固定语义用例、多类型产品/安全 Eval、真实浏览器 E2E，以及支持多 Cookie 用户池和显式写场景的负载测试
 
 ## 技术栈
 
@@ -93,7 +97,9 @@ pnpm exec drizzle-kit check
 pnpm build
 ```
 
-真实端到端验收还覆盖：创建项目、AI 生成 v1、继续修改生成 v2、恢复 v1/v2、发布公开页和生成代码语法检查；同一条生成链路已在正式线上环境再次跑通。
+2026-08-12 当前发布门结果：Vitest 340/340、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9；TypeScript、ESLint、Migration 生成和 Vinext production build 通过。只读压测实际运行 1,000 请求/40 并发，0 失败、P95 2162.62ms。该数据是本机开发 Worker 基线，不应外推为生产容量承诺。
+
+浏览器 E2E 覆盖：项目创建、工作台、流式 Agent 结果、断线恢复、消息队列、账号项目库、v0 真实性、触屏 DOM 编辑，以及一条不 Mock API 的本地 D1 草稿创建/刷新恢复。真实付费模型生成和外部 Provider 验收需在配置相应密钥的 staging/生产环境单独执行。
 
 ## 核心数据流
 
@@ -114,14 +120,15 @@ pnpm build
 
 ## 工程取舍
 
-默认生成物仍是无构建步骤的浏览器三文件应用，但现在每个正式版本同时拥有 AppManifest、运行时 API、项目命名空间 Schema、Auth、日志与备份。这样既保留秒级预览与 sandbox 安全边界，又让生成应用的数据在刷新和跨会话后真实存在。
+默认生成物仍是无构建步骤的浏览器三文件应用，但现在每个正式版本同时拥有 AppManifest、运行时 API、项目命名空间 Schema、Auth、日志与备份；生成提交后会自动登记并异步调和独立物理 D1。这样既保留秒级预览与 sandbox 安全边界，又让生成应用的数据在刷新和跨会话后真实存在。
 
-Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker。npm、pip、系统包、Node/Python/Java 容器由受限的外部 Runner Provider 执行；仓库已经实现任务、权限、限额、回调和审计协议，但没有附带托管容器集群。默认数据库仍是严格的每项目逻辑 D1 命名空间；配置 Cloudflare API Provider 后，可为项目创建独立物理 D1、执行 Schema Migration、管理 Time Travel 书签并延迟删除。GitHub App、Stripe、邮件、物理 D1 与外部 Runner 未配置真实凭据时会显示 `configuration-required`，不会用假成功掩盖边界。
+Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker。npm、pip、系统包、Node/Python/Java 容器由受限的外部 Runner Provider 执行；仓库已经实现任务、最小权限合同、双向签名、防重放、限额、回调和审计协议，但没有附带一个已经购买并在线运行的托管容器集群。默认数据库保持严格的每项目逻辑 D1 命名空间作为故障回退；配置 Cloudflare API Provider 后会自动创建独立物理 D1、增量 Migration、Time Travel 和可选 R2 长期归档。R2 独立归档也不等价于已经完成第二云厂商跨区域灾备。GitHub App、Stripe、邮件、物理 D1 与外部 Runner 未配置真实凭据时会显示 `configuration-required`，不会用假成功掩盖边界。
 
 ## 文档
 
 - [完整文档中心](docs/README.md)
 - [从零到上线：完整教学手册](docs/learning/README.md)
+- [商业化加固与 Provider 落地 Runbook](docs/learning/19-commercial-hardening-and-provider-runbook.md)
 - [架构与取舍](docs/DESIGN.md)
 - [企业级开发、GitHub、部署与排障教学](docs/ENGINEERING-HANDBOOK.md)
 - [www.llynb.cc 自定义域名与长期托管](docs/CUSTOM-DOMAIN-DEPLOYMENT.md)

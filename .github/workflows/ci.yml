@@ -37,6 +37,12 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Fixed product and security eval
+        run: pnpm eval:product
+
+      - name: Drizzle migration consistency
+        run: pnpm exec drizzle-kit check
+
       - name: Lint
         run: pnpm lint
 

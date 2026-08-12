@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** 最终 GitHub commit `b14e81e00d23865640fe318c9ef81abcd82bcf24` 已完成 201 个 Vitest、155 项固定产品/安全 Eval、7 个 Chromium E2E、ESLint、TypeScript、Drizzle 一致性、生产构建和 GitHub Actions。`www.llynb.cc` 仍是上一版稳定部署，代码能力与线上启用状态必须分开判断。
+> **当前验证基线：** `agent/metagpt-quality-gate` 最新版本已完成 340 个 Vitest、283 项固定产品/安全 Eval、17 项专项安全测试、9 个 Chromium E2E、ESLint、TypeScript、Drizzle Migration 和生产构建；并实际完成 1,000 请求/40 并发只读压测，0 失败、P95 2162.62ms。外部 Provider 的“代码就绪”和“账号/资源已配置上线”仍必须分开判断。
 
 ## 先看结论
 
@@ -48,7 +48,9 @@ Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.si
 | 15 | [Race、可视化编辑、Runner 与 Git](15-race-visual-runner-git.md) | 多模型择优、DOM 局部修改、云端点击和 Agent 分支如何串起来 |
 | 16 | [团队协作与生产运维](16-team-operations-observability.md) | RBAC、审批、用量、监控、备份和故障恢复如何实现 |
 | 17 | [P2/P3 部署与验收 Runbook](17-p2-p3-deployment-acceptance.md) | 如何配置 Provider、跑发布门、上线验收并诚实说明边界 |
-| 18 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
+| 18 | [Python 手撕多 Agent](18-python-multi-agent-from-scratch.md) | 不用 LangChain/LangGraph，如何用几个脚本调用云 API 完成写审修复闭环 |
+| 19 | [商业化加固与 Provider 落地](19-commercial-hardening-and-provider-runbook.md) | Provisioner、长期归档、GitHub App、Stripe、Outbox、签名 Runner、安全和压测怎样落地 |
+| 20 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
 
 如果你现在只想“照着做出来”，先读 00、13、07、09 和自定义域名文档；如果你想真正理解代码，再按 01–12 顺序阅读。
 
@@ -84,7 +86,10 @@ nucleus/
 │  ├─ runtime.ts                       iframe 组装、storage shim、启动/错误桥
 │  ├─ db.ts                            D1 租约、阶段、工件、模型尝试、版本与限流
 │  ├─ database-provisioner.ts           可选物理 D1 创建、迁移、备份和删除
+│  ├─ database-schema.ts                 目标 Schema 摘要与 Provisioner 重试策略
+│  ├─ background-tasks.ts                Worker waitUntil 自动创建数据库
 │  ├─ github-app.ts / billing.ts        GitHub App 与 Stripe 控制面
+│  ├─ notifications.ts                   邮件 Outbox、幂等和失败重试
 │  ├─ observability.ts                  服务事件、SLO 与告警
 │  ├─ sandbox-policy.ts                 容器依赖和镜像安全策略
 │  └─ types.ts                         前后端共享类型
@@ -149,4 +154,4 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 - 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A；
 - 首页四个固定成品链接均返回 200；
 - Sign in with ChatGPT 后，账号中心展示项目、版本、对话、工作台链接和公开成品链接；
-- 最终本地发布门为 `pnpm test` 201/201、`pnpm eval:product` 155/155、`pnpm test:e2e` 7/7、TypeScript、ESLint、Drizzle 一致性和生产构建全部通过；GitHub Actions 同样通过。线上真实贪吃蛇运行数据与历史 Sites version 见 `docs/PROGRESS.md`。
+- 当前本地发布门为 `pnpm test` 340/340、`pnpm eval:product` 283/283、`pnpm test:security` 17/17、`pnpm test:e2e` 9/9、TypeScript、ESLint、Drizzle `0009` Migration 和生产构建全部通过；1,000 请求/40 并发只读压测为 0 失败、P95 2162.62ms。固定 Eval 不等价于任意 Prompt 的统计成功率，多 Cookie 真实账号压测仍应在隔离 staging 执行。

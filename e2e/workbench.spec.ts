@@ -270,3 +270,47 @@ test("keeps a v0 draft honest and does not auto-spend a generation", async ({ pa
   await page.waitForTimeout(500);
   expect(runPosts).toBe(0);
 });
+
+test("selects and previews a DOM element from a touch-sized mobile viewport", async ({ browser }) => {
+  const initialProject = project();
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
+  await page.goto("/w/e2e-project");
+  await page.getByRole("button", { name: "收起侧栏" }).click();
+  await expect(page.locator(".runtime-status.passed")).toBeVisible();
+  await page.getByRole("button", { name: "手机预览" }).click();
+  await page.getByRole("button", { name: "选择页面元素进行局部修改" }).click();
+  const generatedButton = page.frameLocator("iframe").getByRole("button", { name: "添加任务" });
+  await generatedButton.evaluate((element) => {
+    element.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const panel = page.locator(".visual-edit-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("code")).toContainText("button");
+  await panel.getByLabel("高度").fill("52px");
+  await panel.getByLabel("Display").fill("grid");
+  await panel.getByRole("button", { name: "预览修改" }).click();
+  await expect(page.getByText("局部样式已在预览中应用", { exact: false })).toBeVisible();
+  await context.close();
+});
+
+test("creates and reopens a real local D1-backed draft without API mocks", async ({ page }) => {
+  await page.goto("/");
+  const created = await page.evaluate(async () => {
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: `E2E 实际控制面草稿 ${Date.now()}` }),
+    });
+    return { status: response.status, body: await response.json() as { project?: { id?: string }; error?: string } };
+  });
+  expect(created.status, created.body.error).toBe(201);
+  const projectId = created.body.project?.id;
+  expect(projectId).toMatch(/^[a-f0-9-]{36}$/i);
+  await page.goto(`/w/${projectId}`);
+  await expect(page.getByText("VERSION 0 · NO GENERATED APP")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("VERSION 0 · NO GENERATED APP")).toBeVisible();
+});

@@ -284,8 +284,10 @@ glm-5.2 -> qwen3.5-plus
 当前交付在本地和 GitHub CI 同时通过：
 
 ```powershell
-pnpm test             # 当前基线 41/41
-pnpm test:e2e         # 当前基线 7/7 Chromium
+pnpm test             # 当前基线 340/340
+pnpm eval:product     # 当前基线 283/283
+pnpm test:security    # 当前基线 17/17
+pnpm test:e2e         # 当前基线 9/9 Chromium
 pnpm lint
 pnpm exec tsc --noEmit
 pnpm build

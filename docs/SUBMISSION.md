@@ -3,7 +3,7 @@
 > 候选人：李龙勇
 > 项目名称：Nucleus
 > 项目定位：可恢复、可审计的多 Agent 网页应用生成平台
-> 最终功能代码基线：`b14e81e00d23865640fe318c9ef81abcd82bcf24`
+> 最终功能代码基线：`agent/metagpt-quality-gate` 分支最新提交（2026-08-12 商业化加固版）
 
 ## 0. 笔试结果回收信息
 
@@ -21,7 +21,7 @@
 - 对应工作台与 Agent 审计：<https://www.llynb.cc/w/d1bf0eb6-4b74-48d0-984e-ebaa773cbb3c>
 - 最终 GitHub PR 与 CI：<https://github.com/lilongyong333/nucleus-ai-builder/pull/2>
 
-> 说明：在线域名运行的是上一版稳定部署；最终 GitHub 分支额外包含商业控制面基础代码。两者分开标注，避免把“已经实现但尚未配置外部凭据”的能力描述成“已经在线开通”。
+> 说明：仓库对所有外部 Provider 使用 `ready / configuration-required / failed` 等真实状态。部署成功只代表应用代码和 Sites 资源上线，不代表 GitHub App、Stripe、Resend、Sentry、物理 D1 API Token 或容器集群已经替用户注册和充值。
 
 ## 1. 项目概述
 
@@ -144,7 +144,17 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 
 ### 5.5 面向继续产品化的控制面
 
-最终代码还提供了组织 RBAC、发布审批、用量事件、Agent Git 分支、外部 Playwright/容器 Runner 协议、可选物理 D1 Provisioner、GitHub App、Stripe、邮件、维护任务和 SLO 评估基础。所有外部 Provider 缺少凭据时都会返回 `configuration-required`，不会把尚未开通的云服务描述为成功。
+最终代码还提供了组织 RBAC、发布审批、用量事件、Agent Git 分支、外部 Playwright/容器 Runner 协议、自动物理 D1 Provisioner、GitHub App、Stripe、邮件、维护任务和 SLO 评估基础。所有外部 Provider 缺少凭据时都会返回 `configuration-required`，不会把尚未开通的云服务描述为成功。
+
+### 5.6 可恢复的商业 Provider，而不是一次性 API 调用
+
+- 物理 D1 使用目标 Schema Revision、四分钟租约、卡死回收、指数退避和定时 Reconciler；
+- D1 Time Travel 用于快速回滚，绑定 R2 后通过 Export API 保存长期 SQL/JSON 归档；
+- GitHub App Installation Token 为默认凭据，旧 PAT 默认关闭；
+- Resend 和运维告警采用 Outbox-first、Idempotency-Key、失败重试和告警冷却；
+- Stripe 同步 Subscription、Invoice 和组织真实权益，取消/暂停/未支付会降级；
+- Runner 回调同时校验 Bearer、五分钟 HMAC 和 Job 状态，防 Body 篡改与重放；
+- 手机触屏可以选中 iframe DOM，在底部编辑器修改文字、尺寸、间距、Display 和 Grid。
 
 ## 6. 关键工程取舍
 
@@ -162,19 +172,20 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 
 | 能力 | 当前真实状态 |
 |---|---|
-| 最终 GitHub 商业控制面代码部署到 `www.llynb.cc` | 尚未部署；在线地址保持上一版稳定版本 |
-| 托管的任意 Node/Python/Java 容器集群 | 已有 Provider 协议、配额和回调；没有附带真实集群 |
-| 每项目物理 D1 | Provisioner 和 Migration 已实现；需要 Cloudflare API Token 后真实开通 |
-| GitHub App | OAuth/JWT/Installation Token 代码已实现；需要注册 App 和配置私钥 |
-| Stripe 和邮件 | 真实 API 集成骨架已实现；没有配置商户、价格、域名和生产密钥 |
-| 大规模生成成功率 | 已有固定 Eval，但没有足够大的多类型真实生成样本，不能宣称统计成功率 |
-| 多用户高负载与安全攻防 | 有只读负载脚本和安全契约测试；尚未完成生产规模压测和专业渗透测试 |
+| 托管的任意 Node/Python/Java 容器集群 | 已有安全合同、Provider 下发、双向签名、配额和审计；仓库不附送已购买的 gVisor/Kata 集群 |
+| 每项目物理 D1 | 自动登记、异步创建、增量 Migration、租约/重试/Reconciler 已实现；实际创建仍需最小权限 Cloudflare Token |
+| 长期备份与灾备 | Time Travel + 可选 R2 SQL/JSON 归档已实现；没有完成第二云厂商跨区域恢复演练 |
+| GitHub App | 安装 OAuth、JWT、短期 Installation Token 已实现且默认优先；仍需在 GitHub 注册 App 和配置私钥 |
+| Stripe 和邮件 | Checkout、Portal、签名 Webhook、Invoice、Meter、权益同步和邮件 Outbox 已实现；仍需真实商户、价格、邮件域名和生产密钥 |
+| 大规模生成成功率 | 240 个固定语义变体和 283 项产品/安全 Eval 已通过，但不是 240 次真实付费模型生成，不能宣称任意 Prompt 成功率 |
+| 多用户高负载 | 1,000 请求/40 并发匿名客户端实测 0 失败；脚本支持多 Cookie 用户池，但尚未在生产 staging 准备大规模真实账号 |
+| 安全攻防 | 17 项专项策略测试覆盖依赖来源、镜像 Digest、元数据 SSRF、Docker Socket、子进程和回调篡改；不代替专业红队和沙箱逃逸审计 |
 
 ## 8. 如果继续投入：扩展优先级
 
 ### P0 - 先保证最终版本可交付
 
-1. 将最终分支部署到 staging，执行 D1 `0008` Migration；
+1. 将最终分支部署到 staging，执行 D1 `0009_harsh_bloodstorm.sql` Migration；
 2. 跑登录、生成、恢复、发布、公开页和移动端完整烟雾测试；
 3. 验证 Cloudflare 日志、告警和一键回滚后再切换生产域名。
 
@@ -199,19 +210,20 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 
 ## 9. 验证结果
 
-最终功能提交 `b14e81e` 的实际验收结果：
+2026-08-12 商业化加固版的实际验收结果：
 
-- Vitest 单元/集成测试：**201/201**；
-- 固定产品与安全 Eval：**155/155**；
-- Chromium Playwright 真实浏览器 E2E：**7/7**；
+- Vitest 单元/集成/固定契约：**16 个文件，340/340**；
+- 固定产品与安全 Eval：**3 个文件，283/283**；
+- 专项安全策略测试：**17/17**；
+- Chromium Playwright 真实浏览器 E2E：**9/9**；
 - TypeScript：通过；
 - ESLint：通过；
-- Drizzle Schema/Migration 一致性：通过；
+- Drizzle Schema/Migration：成功生成并检查 `0009_harsh_bloodstorm.sql`；
 - Vinext production build：通过；
-- GitHub Actions Linux CI：通过；
-- Git diff、常见密钥格式和原始笔试 PDF 提交检查：通过。
+- 只读并发压测：**1,000 请求、40 并发、0 失败、P95 2162.62ms**；
+- Git diff、常见密钥格式和原始笔试 PDF 提交检查：在最终推送前再次执行。
 
-固定 Eval 验证的是确定性产品与安全契约，不等价于“任意需求生成成功率 100%”。
+9 条 E2E 中包含一条不 Mock API 的真实本地 D1 控制面草稿创建/刷新恢复，以及一条 390×844 Touch Context 的 DOM 选择与局部修改。固定 Eval 验证的是确定性产品与安全契约，不等价于“任意需求生成成功率 100%”；压测结果也只是本机开发 Worker 基线，不是生产 SLA。
 
 ## 10. AI 工具使用说明
 
@@ -219,7 +231,7 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 - **OpenCode Go 模型 API：** 作为 Nucleus 产品内部 Iris/Bob/Alex/Ray 的真实模型来源；
 - **人工判断：** 决定产品范围、失败是否可以接受、功能优先级、工程边界和最终交付标准。
 
-项目保留了失败 Run、模型尝试、生产故障和逐轮修复证据。完整教学和复现材料位于 `docs/learning/`，逐轮验收记录位于 `docs/PROGRESS.md`。
+项目保留了失败 Run、模型尝试、生产故障和逐轮修复证据。完整教学和复现材料位于 `docs/learning/`；本轮 Provisioner、GitHub App、Stripe、Outbox、Runner、安全和压测细节见 `docs/learning/19-commercial-hardening-and-provider-runbook.md`；逐轮验收记录位于 `docs/PROGRESS.md`。
 
 ## 11. 建议演示顺序（3 分钟）
 

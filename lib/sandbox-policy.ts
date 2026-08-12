@@ -39,6 +39,7 @@ export type SandboxContract = {
 
 export async function buildSandboxContract(files: GeneratedFiles, manifest: AppManifest, allowedContainerRegistries: string[]): Promise<SandboxContract> {
   validateDependencies(manifest, allowedContainerRegistries);
+  validateGeneratedSource(files);
   const serializedFiles = JSON.stringify(files);
   if (serializedFiles.length > 1_500_000) throw new SandboxPolicyError("生成工件超过沙箱传输上限", "artifact.max-bytes");
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serializedFiles)));
@@ -63,6 +64,20 @@ export async function buildSandboxContract(files: GeneratedFiles, manifest: AppM
   };
 }
 
+export function validateGeneratedSource(files: GeneratedFiles): void {
+  const rules: Array<{ pattern: RegExp; rule: string; message: string }> = [
+    { pattern: /(?:169\.254\.169\.254|metadata\.google\.internal)/i, rule: "source.metadata-service", message: "禁止访问云实例元数据服务" },
+    { pattern: /(?:\/var\/run\/docker\.sock|\\\\\.\\pipe\\docker_engine)/i, rule: "source.container-socket", message: "禁止访问宿主容器运行时 Socket" },
+    { pattern: /(?:node:)?child_process|\brequire\s*\(\s*["']child_process["']\s*\)|\b(?:Deno\.run|Bun\.spawn|process\.binding)\b/i, rule: "source.process-spawn", message: "生成代码禁止启动宿主进程" },
+    { pattern: /\bfile:\/\//i, rule: "source.file-uri", message: "生成代码禁止通过 file URI 读取宿主文件" },
+  ];
+  for (const [path, content] of Object.entries(files)) {
+    for (const rule of rules) {
+      if (rule.pattern.test(content)) throw new SandboxPolicyError(`${rule.message}：${path}`, rule.rule);
+    }
+  }
+}
+
 export function validateDependencies(manifest: AppManifest, allowedContainerRegistries: string[]): void {
   for (const dependency of manifest.dependencies.npm) {
     if (FORBIDDEN_SOURCE.test(dependency) || !NPM_PACKAGE.test(dependency)) throw new SandboxPolicyError(`npm 依赖来源被策略拒绝：${dependency}`, "dependency.npm-registry-only");
@@ -84,6 +99,18 @@ export async function signRunnerPayload(payload: string, secret: string, timesta
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${payload}`)));
   return hex(digest);
+}
+
+export async function verifyRunnerPayloadSignature(payload: string, secret: string, timestamp: string | null, suppliedSignature: string | null, nowMs = Date.now()): Promise<boolean> {
+  if (!secret || !timestamp || !suppliedSignature || !/^\d{10,13}$/.test(timestamp)) return false;
+  const timestampSeconds = Number(timestamp.length === 13 ? Math.floor(Number(timestamp) / 1_000) : timestamp);
+  if (!Number.isFinite(timestampSeconds) || Math.abs(Math.floor(nowMs / 1_000) - timestampSeconds) > 300) return false;
+  const supplied = suppliedSignature.match(/^v1=([a-f0-9]{64})$/i)?.[1]?.toLowerCase();
+  if (!supplied) return false;
+  const expected = await signRunnerPayload(payload, secret, timestamp);
+  let difference = 0;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ supplied.charCodeAt(index);
+  return difference === 0;
 }
 
 function hex(bytes: Uint8Array): string {

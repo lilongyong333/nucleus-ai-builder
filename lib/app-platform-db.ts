@@ -4,6 +4,7 @@ import {
   countPhysicalRecords,
   createPhysicalBookmark,
   deletePhysicalRecord,
+  exportPhysicalDatabaseSql,
   getPhysicalDatabase,
   getPhysicalRecord,
   insertPhysicalRecord,
@@ -13,6 +14,8 @@ import {
 } from "./database-provisioner";
 import { ensureSchema } from "./db";
 import { recordServiceEvent } from "./observability";
+import { githubAppConfigured } from "./github-app";
+import { githubLegacyPatConfigured } from "./github-automation";
 import type {
   AppBackup,
   AppManifest,
@@ -43,6 +46,10 @@ function database(): D1Database {
   const binding = (env as unknown as { DB?: D1Database }).DB;
   if (!binding) throw new AppPlatformError("应用数据库暂不可用", 503);
   return binding;
+}
+
+function archiveBucket(): R2Bucket | null {
+  return (env as unknown as { ARCHIVE?: R2Bucket }).ARCHIVE ?? null;
 }
 
 export async function getAppManifest(projectId: string): Promise<AppManifest | null> {
@@ -265,37 +272,34 @@ export async function claimBrowserRunnerRepair(projectId: string): Promise<Runti
 export async function createAppBackup(projectId: string, actorId: string, label = "手动备份"): Promise<AppBackup> {
   await ensureSchema();
   const physical = await getPhysicalDatabase(projectId);
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  const safeLabel = label.trim().slice(0, 120) || "手动备份";
+  const archiveStatus = archiveBucket() ? "pending" : "not-configured";
   if (physical) {
     const bookmark = await createPhysicalBookmark(physical);
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const safeLabel = label.trim().slice(0, 120) || "手动备份";
     const recordCount = await countPhysicalRecords(physical);
     const snapshot = JSON.stringify({ provider: "cloudflare-d1-time-travel", externalDatabaseId: physical.externalDatabaseId, bookmark });
-    await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,created_at) VALUES (?,?,?,?,?,?,?)`).bind(id, projectId, safeLabel, snapshot, recordCount, actorId, now).run();
+    await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,archive_status,expires_at,created_at) VALUES (?,?,?,?,?,?,?, ?,?)`).bind(id, projectId, safeLabel, snapshot, recordCount, actorId, archiveStatus, expiresAt, now).run();
+    if (archiveStatus === "pending") await archivePhysicalBackup(id, physical).catch((error) => markArchiveFailure(id, error));
     await recordServiceEvent({ projectId, service: "database", operation: "backup.time-travel", level: "info", message: "Cloudflare D1 Time Travel 书签已创建", detail: { recordCount, backupId: id } }).catch(() => undefined);
-    return { id, projectId, label: safeLabel, recordCount, createdBy: actorId, createdAt: now, provider: "cloudflare-d1-time-travel", status: "ready", bookmark };
+    return await readAppBackup(projectId, id);
   }
   const result = await database().prepare(`SELECT * FROM app_records WHERE project_id=? AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 5000`).bind(projectId).all<D1Row>();
   const records = (result.results ?? []).map(recordFromRow);
   const snapshot = JSON.stringify(records);
   if (snapshot.length > 1_800_000) throw new AppPlatformError("应用数据超过单次 D1 备份上限，请配置外部对象存储", 413);
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const safeLabel = label.trim().slice(0, 120) || "手动备份";
-  await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,created_at) VALUES (?,?,?,?,?,?,?)`).bind(id, projectId, safeLabel, snapshot, records.length, actorId, now).run();
+  await database().prepare(`INSERT INTO app_backups (id,project_id,label,snapshot_json,record_count,created_by,archive_status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).bind(id, projectId, safeLabel, snapshot, records.length, actorId, archiveStatus, expiresAt, now).run();
+  if (archiveStatus === "pending") await archiveLogicalBackup(id, projectId, snapshot).catch((error) => markArchiveFailure(id, error));
   await recordServiceEvent({ projectId, service: "database", operation: "backup.snapshot", level: "info", message: "逻辑 D1 快照已创建", detail: { recordCount: records.length, backupId: id } }).catch(() => undefined);
-  return { id, projectId, label: safeLabel, recordCount: records.length, createdBy: actorId, createdAt: now };
+  return await readAppBackup(projectId, id);
 }
 
 export async function listAppBackups(projectId: string): Promise<AppBackup[]> {
   await ensureSchema();
-  const result = await database().prepare(`SELECT id,project_id,label,snapshot_json,record_count,created_by,created_at FROM app_backups WHERE project_id=? ORDER BY created_at DESC LIMIT 30`).bind(projectId).all<D1Row>();
-  return (result.results ?? []).map((row) => {
-    const snapshot = parseJson<{ provider?: string; bookmark?: string }>(row.snapshot_json, {});
-    const physical = snapshot.provider === "cloudflare-d1-time-travel";
-    return { id: String(row.id), projectId: String(row.project_id), label: String(row.label), recordCount: Number(row.record_count), createdBy: String(row.created_by), createdAt: String(row.created_at), provider: physical ? "cloudflare-d1-time-travel" : "snapshot", status: "ready", bookmark: physical ? snapshot.bookmark ?? null : null };
-  });
+  const result = await database().prepare(`SELECT * FROM app_backups WHERE project_id=? ORDER BY created_at DESC LIMIT 30`).bind(projectId).all<D1Row>();
+  return (result.results ?? []).map(appBackupFromRow);
 }
 
 export async function restoreAppBackup(projectId: string, backupId: string, actorId: string): Promise<AppBackup> {
@@ -323,6 +327,59 @@ export async function restoreAppBackup(projectId: string, backupId: string, acto
   return createAppBackup(projectId, actorId, `已恢复：${String(backup.label)}`);
 }
 
+async function archivePhysicalBackup(backupId: string, resource: NonNullable<Awaited<ReturnType<typeof getPhysicalDatabase>>>): Promise<void> {
+  const bucket = archiveBucket();
+  if (!bucket) return;
+  const exported = await exportPhysicalDatabaseSql(resource);
+  const key = `database-backups/${safeArchiveSegment(resource.projectId)}/${backupId}.sql`;
+  const object = await bucket.put(key, exported.response.body!, {
+    httpMetadata: { contentType: "application/sql" },
+    customMetadata: { projectId: resource.projectId, databaseId: resource.externalDatabaseId ?? "", bookmark: exported.bookmark, sourceFilename: exported.filename.slice(0, 512) },
+  });
+  await database().prepare(`UPDATE app_backups SET archive_key=?,archive_status='ready',archive_bytes=?,archive_error=NULL WHERE id=?`).bind(key, object.size, backupId).run();
+}
+
+async function archiveLogicalBackup(backupId: string, projectId: string, snapshot: string): Promise<void> {
+  const bucket = archiveBucket();
+  if (!bucket) return;
+  const key = `database-backups/${safeArchiveSegment(projectId)}/${backupId}.json`;
+  const object = await bucket.put(key, snapshot, { httpMetadata: { contentType: "application/json" }, customMetadata: { projectId, kind: "logical-d1-snapshot" } });
+  await database().prepare(`UPDATE app_backups SET archive_key=?,archive_status='ready',archive_bytes=?,archive_error=NULL WHERE id=?`).bind(key, object.size, backupId).run();
+}
+
+async function markArchiveFailure(backupId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : "对象存储归档失败";
+  const row = await database().prepare(`UPDATE app_backups SET archive_status='failed',archive_error=? WHERE id=? RETURNING project_id`).bind(message.slice(0, 800), backupId).first<D1Row>();
+  await recordServiceEvent({ projectId: row?.project_id ? String(row.project_id) : null, service: "database", operation: "backup.archive", level: "error", message, detail: { backupId } }).catch(() => undefined);
+}
+
+async function readAppBackup(projectId: string, backupId: string): Promise<AppBackup> {
+  const row = await database().prepare(`SELECT * FROM app_backups WHERE id=? AND project_id=?`).bind(backupId, projectId).first<D1Row>();
+  if (!row) throw new AppPlatformError("备份写入后无法读取", 500);
+  return appBackupFromRow(row);
+}
+
+async function deleteExpiredAppBackups(projectId: string, before: string): Promise<{ deleted: number; failed: number }> {
+  const rows = await database().prepare(`SELECT id,archive_key FROM app_backups WHERE project_id=? AND created_at<? AND created_by='system:scheduled-backup' ORDER BY created_at ASC LIMIT 100`).bind(projectId, before).all<D1Row>();
+  let deleted = 0;
+  let failed = 0;
+  for (const row of rows.results ?? []) {
+    try {
+      if (row.archive_key) {
+        const bucket = archiveBucket();
+        if (!bucket) throw new AppPlatformError("归档桶未绑定，暂缓删除以避免遗留对象", 503);
+        await bucket.delete(String(row.archive_key));
+      }
+      const result = await database().prepare(`DELETE FROM app_backups WHERE id=? AND project_id=?`).bind(row.id, projectId).run();
+      deleted += Number(result.meta.changes ?? 0);
+    } catch (error) {
+      failed += 1;
+      await database().prepare(`UPDATE app_backups SET archive_error=? WHERE id=?`).bind((error instanceof Error ? error.message : "过期备份清理失败").slice(0, 800), row.id).run();
+    }
+  }
+  return { deleted, failed };
+}
+
 export async function runDueAppBackups(limit = 20): Promise<{ completed: string[]; failed: Array<{ projectId: string; error: string }> }> {
   await ensureSchema();
   const due = await database().prepare(`SELECT p.* FROM backup_policies p JOIN projects project ON project.id=p.project_id WHERE p.enabled=1 AND (p.next_run_at IS NULL OR p.next_run_at<=?) ORDER BY COALESCE(p.next_run_at,p.created_at) ASC LIMIT ?`).bind(new Date().toISOString(), Math.max(1, Math.min(100, limit))).all<D1Row>();
@@ -336,7 +393,7 @@ export async function runDueAppBackups(limit = 20): Promise<{ completed: string[
       const now = new Date();
       await database().prepare(`UPDATE backup_policies SET last_run_at=?,next_run_at=?,updated_at=? WHERE project_id=?`).bind(now.toISOString(), new Date(now.getTime() + intervalHours * 3_600_000).toISOString(), now.toISOString(), projectId).run();
       const retentionDays = Math.max(1, Math.min(365, Number(row.retention_days ?? 30)));
-      await database().prepare(`DELETE FROM app_backups WHERE project_id=? AND created_at<? AND created_by='system:scheduled-backup'`).bind(projectId, new Date(Date.now() - retentionDays * 86_400_000).toISOString()).run();
+      await deleteExpiredAppBackups(projectId, new Date(Date.now() - retentionDays * 86_400_000).toISOString());
       completed.push(projectId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "定时备份失败";
@@ -351,7 +408,7 @@ export async function runDueAppBackups(limit = 20): Promise<{ completed: string[
 export async function createRunnerJob(input: { projectId: string; versionId: string | null; kind: RunnerJob["kind"]; request: Record<string, unknown>; provider?: string }): Promise<RunnerJob> {
   await ensureSchema();
   const runtime = env as unknown as Record<string, unknown>;
-  const githubRunnerReady = Boolean(runtime.GITHUB_AUTOMATION_TOKEN || (runtime.GITHUB_RUNNER_INSTALLATION_ID && runtime.GITHUB_APP_ID && runtime.GITHUB_APP_PRIVATE_KEY));
+  const githubRunnerReady = Boolean((runtime.GITHUB_RUNNER_INSTALLATION_ID && githubAppConfigured()) || githubLegacyPatConfigured());
   const configured = input.kind === "playwright"
     ? Boolean(githubRunnerReady && runtime.NUCLEUS_RUNNER_CALLBACK_TOKEN && runtime.GITHUB_RUNNER_REPOSITORY)
     : input.kind === "container-build"
@@ -385,7 +442,7 @@ export async function listRunnerJobs(projectId: string): Promise<RunnerJob[]> {
 export async function completeRunnerJob(jobId: string, status: "passed" | "failed", result: Record<string, unknown>): Promise<RunnerJob | null> {
   await ensureSchema();
   const now = new Date().toISOString();
-  const row = await database().prepare(`UPDATE runner_jobs SET status=?,result_json=?,completed_at=?,started_at=COALESCE(started_at,?) WHERE id=? RETURNING *`).bind(status, JSON.stringify(boundedJsonObject(result, 120_000)), now, now, jobId).first<D1Row>();
+  const row = await database().prepare(`UPDATE runner_jobs SET status=?,result_json=?,completed_at=?,started_at=COALESCE(started_at,?) WHERE id=? AND status IN ('queued','running') RETURNING *`).bind(status, JSON.stringify(boundedJsonObject(result, 120_000)), now, now, jobId).first<D1Row>();
   if (row) await recordServiceEvent({ projectId: String(row.project_id), service: "runner", operation: String(row.kind), level: status === "failed" ? "error" : "info", message: status === "failed" ? "外部 Runner 验收失败" : "外部 Runner 验收通过", detail: boundedJsonObject(result, 32_000) }).catch(() => undefined);
   return row ? runnerJobFromRow(row) : null;
 }
@@ -485,6 +542,27 @@ function recordFromRow(row: D1Row): AppRecord {
   };
 }
 
+function appBackupFromRow(row: D1Row): AppBackup {
+  const snapshot = parseJson<{ provider?: string; bookmark?: string }>(row.snapshot_json, {});
+  const physical = snapshot.provider === "cloudflare-d1-time-travel";
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    label: String(row.label),
+    recordCount: Number(row.record_count),
+    createdBy: String(row.created_by),
+    createdAt: String(row.created_at),
+    provider: physical ? "cloudflare-d1-time-travel" : "snapshot",
+    status: "ready",
+    bookmark: physical ? snapshot.bookmark ?? null : null,
+    archiveKey: row.archive_key ? String(row.archive_key) : null,
+    archiveStatus: row.archive_status ? String(row.archive_status) as AppBackup["archiveStatus"] : "not-configured",
+    archiveBytes: row.archive_bytes === null || row.archive_bytes === undefined ? null : Number(row.archive_bytes),
+    archiveError: row.archive_error ? String(row.archive_error) : null,
+    expiresAt: row.expires_at ? String(row.expires_at) : null,
+  };
+}
+
 function runnerJobFromRow(row: D1Row): RunnerJob {
   return {
     id: String(row.id),
@@ -522,6 +600,10 @@ function parseJson<T>(value: unknown, fallback: T): T {
 
 function randomToken(): string {
   return `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function safeArchiveSegment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "unknown-project";
 }
 
 async function hashToken(value: string): Promise<string> {

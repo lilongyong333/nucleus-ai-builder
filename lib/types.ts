@@ -92,6 +92,10 @@ export type AppDatabaseResource = {
   databaseName: string;
   locationHint: string | null;
   schemaVersion: number;
+  desiredSchemaVersion: number;
+  attemptCount: number;
+  nextRetryAt: string | null;
+  leaseExpiresAt: string | null;
   lastMigrationAt: string | null;
   lastBackupAt: string | null;
   retentionUntil: string | null;
@@ -170,6 +174,11 @@ export type AppBackup = {
   provider?: "snapshot" | "cloudflare-d1-time-travel";
   status?: "ready" | "failed";
   bookmark?: string | null;
+  archiveKey?: string | null;
+  archiveStatus?: "not-configured" | "pending" | "ready" | "failed";
+  archiveBytes?: number | null;
+  archiveError?: string | null;
+  expiresAt?: string | null;
 };
 
 export type RunnerJob = {
@@ -255,10 +264,13 @@ export type NotificationDelivery = {
   kind: string;
   channel: "email";
   recipient: string;
-  status: "sent" | "failed" | "configuration-required";
+  status: "queued" | "sent" | "failed" | "configuration-required";
   provider: "resend";
   providerMessageId: string | null;
   error: string | null;
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
   createdAt: string;
   deliveredAt: string | null;
 };
@@ -275,13 +287,29 @@ export type BillingAccount = {
   updatedAt: string;
 };
 
+export type BillingInvoice = {
+  id: string;
+  organizationId: string;
+  providerInvoiceId: string;
+  status: string;
+  currency: string;
+  amountDue: number;
+  amountPaid: number;
+  hostedInvoiceUrl: string | null;
+  invoicePdf: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type OperationalSummary = {
   windowMinutes: number;
   total: number;
   errors: number;
   errorRate: number;
   p95DurationMs: number | null;
-  slo: { target: number; healthy: boolean };
+  slo: { target: number; healthy: boolean; availabilityHealthy: boolean; latencyHealthy: boolean; latencyTargetMs: number };
   alerting: "ready" | "configuration-required";
 };
 

@@ -376,3 +376,46 @@ Production      passed
 - Drizzle schema/migration consistency：通过；
 - Vinext production build：通过；
 - `git diff --check` 与通用密钥扫描：通过。
+
+## 第十四轮：可恢复商业 Provider、长期归档与移动端安全加固
+
+### Provisioner 与数据库生命周期
+
+- 正式 Version 保存后自动登记 `desired_schema_version`，并通过 Vinext Request ExecutionContext 的 `waitUntil` 异步触发独立 D1 创建；小时维护任务作为可靠兜底；
+- 新增稳定数据库 Schema Digest，只有集合/字段契约改变才迁移，纯 UI 修改不会无意义重建数据库；
+- Provisioner 新增四分钟租约、卡死回收、失败次数、下次重试时间和指数退避；`pending/error/configuration-required` 可被 Reconciler 自动恢复；
+- 旧逻辑数据改为 500 条分页迁移，并在创建完成后回放并发窗口；`ON CONFLICT ... DO UPDATE WHERE excluded.revision > current.revision` 防止旧数据覆盖新 Revision；
+- 删除任务不再因缺少 Cloudflare Token 误删控制面状态；延迟删除失败保留任务并由维护任务重试；
+- migration `0009_harsh_bloodstorm.sql` 新增 Provisioner 重试字段、备份归档字段、通知 Outbox 字段、发票和运维告警表。
+
+### 备份、通知、账单和运维
+
+- 物理 D1 先创建 Time Travel Bookmark；绑定 `ARCHIVE` R2 后，通过 D1 Export polling 获取 SQL 并流式写入对象存储；逻辑 D1 以 JSON 归档；
+- 过期备份先删除 R2 Object，再删除控制面行；对象清理失败时保留元数据，避免产生无法追踪的数据残留；
+- Resend 邀请邮件改为 Outbox-first，保存 Payload、Attempts、Next Attempt、Last Attempt，并使用稳定 Idempotency-Key；
+- Sentry/Webhook 告警增加持久化 Outbox、Fingerprint 冷却去重、HTTP 状态检查和失败重试；SLO 同时检查可用性和 P95；
+- Stripe Webhook 修复组织 ID 解析范围，新增 Invoice 镜像、Hosted Invoice/PDF、支付失败/成功状态和 Fail-closed 权益同步；取消、暂停、未支付会把组织降为 Demo；
+- GitHub App Installation Token 成为默认路径，`GITHUB_AUTOMATION_TOKEN` 只有显式设置 `NUCLEUS_ALLOW_LEGACY_GITHUB_PAT=true` 才能回退。
+
+### Runner、移动端、安全与压测
+
+- Playwright/容器 Runner 回调增加 Bearer + 原始 Body HMAC + 五分钟时钟窗口；Job 只有 queued/running 能进入终态，重复回调返回 409；
+- Sandbox Policy 增加本地/Workspace 依赖、额外 pip Index、实例元数据 SSRF、Docker Socket、Node 子进程和 `file://` 防护测试；
+- DOM Picker 从 mouseover 升级为 pointerover + touchstart + click target fallback；移动底部面板新增高度、Margin、Display 和 Grid Columns；
+- 固定产品语义语料从 120 扩到 240；新增真实本地 D1 控制面 E2E 和 390×844 Touch E2E；
+- `scripts/load-test.mjs` 支持多 Cookie 用户池、JSON 场景、显式写开关、Expected Status、失败率和 P95 门槛；
+- 实际本机开发 Worker 压测 1,000 请求/40 并发，1,000 成功、0 失败、36.48 RPS、P95 2162.62ms、P99 4158.84ms。该结果不是生产 SLA。
+
+### 第十四轮发布门
+
+- TypeScript：通过；
+- Vitest：16 文件，340/340；
+- 固定产品与安全 Eval：3 文件，283/283；
+- 专项安全：17/17；
+- Chromium Playwright：9/9；
+- ESLint：通过；
+- Vinext production build：通过；
+- Drizzle：成功生成并检查 `0009_harsh_bloodstorm.sql`；
+- 新增完整教学：`docs/learning/19-commercial-hardening-and-provider-runbook.md`。
+
+仍需外部资源的项目保持诚实边界：托管 gVisor/Kata 集群、GitHub App 注册、Stripe 商户/价格、Resend 验证域名、Sentry 项目、Cloudflare Provisioner Token 和第二云厂商跨区域 DR 都不能仅凭仓库代码宣称已经在线。

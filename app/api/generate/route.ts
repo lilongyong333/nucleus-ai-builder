@@ -3,6 +3,7 @@ import { resolveWorkspaceIdentity, withWorkspaceIdentity, type WorkspaceIdentity
 import { activeModel, buildApp, createGenerationBudget, createPlan, type GenerationProgress } from "@/lib/opencode";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, ModelUsage, Project } from "@/lib/types";
+import { scheduleProjectDatabaseProvisioning } from "@/lib/background-tasks";
 
 export const maxDuration = 60;
 
@@ -124,6 +125,7 @@ export async function POST(request: Request) {
         await status("Ray", "quality", `质量门 ${result.quality.grade} 级`, `${result.quality.score}/100 · 检查通过，正在保存版本`, "done");
 
         const saved = await saveGeneration(projectId, identity.ownerId, activeGenerationId, planResult.plan, result.files, result.summary, finalModel(), result.quality, metrics());
+        scheduleProjectDatabaseProvisioning(projectId);
         emit({ type: "status", agent: "Ray", title: "版本已保存", detail: `${budget.usage.totalTokens || "未返回"} tokens · 可回滚、分享和下载`, state: "done" });
         emit({ type: "complete", project: saved });
       } catch (error) {

@@ -5,7 +5,7 @@ import { getGitIntegration } from "@/lib/github-automation";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
 import { getProjectOrganization, listProjectApprovals } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
-import { getBillingAccount } from "@/lib/billing";
+import { getBillingAccount, listBillingInvoices } from "@/lib/billing";
 import { listGitHubAppInstallations } from "@/lib/github-app";
 import { listNotificationDeliveries } from "@/lib/notifications";
 import { operationalSummary } from "@/lib/observability";
@@ -32,8 +32,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       listNotificationDeliveries(id),
       operationalSummary(id),
     ]);
-    const billing = organization ? await getBillingAccount(organization.id) : null;
-    return withWorkspaceIdentity(Response.json({ manifest, stats, evidence, backups, runnerJobs, organization, approvals, git, databaseResource, provisioningEvents, githubInstallations, notifications, billing, operations }), identity);
+    const [billing, invoices] = organization ? await Promise.all([getBillingAccount(organization.id), listBillingInvoices(organization.id)]) : [null, []];
+    return withWorkspaceIdentity(Response.json({ manifest, stats, evidence, backups, runnerJobs, organization, approvals, git, databaseResource, provisioningEvents, githubInstallations, notifications, billing, invoices, operations }), identity);
   } catch (error) {
     return withVisitorSession(Response.json({ error: error instanceof Error ? error.message : "读取应用平台状态失败" }, { status: 500 }), visitor);
   }

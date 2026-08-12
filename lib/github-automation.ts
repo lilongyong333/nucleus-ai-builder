@@ -19,8 +19,23 @@ function database(): D1Database {
 }
 
 function personalAccessToken(): string | null {
+  if (!githubLegacyPatEnabled()) return null;
   const value = (env as unknown as Record<string, unknown>).GITHUB_AUTOMATION_TOKEN ?? process.env.GITHUB_AUTOMATION_TOKEN;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function githubLegacyPatEnabled(): boolean {
+  const runtime = env as unknown as Record<string, unknown>;
+  const value = runtime.NUCLEUS_ALLOW_LEGACY_GITHUB_PAT ?? process.env.NUCLEUS_ALLOW_LEGACY_GITHUB_PAT;
+  return typeof value === "string" && value.trim().toLowerCase() === "true";
+}
+
+export function githubLegacyPatConfigured(): boolean {
+  return personalAccessToken() !== null;
+}
+
+export function githubLegacyPatToken(): string | null {
+  return personalAccessToken();
 }
 
 export async function getGitIntegration(projectId: string): Promise<GitIntegration | null> {
@@ -45,7 +60,7 @@ export async function syncAgentBranches(projectId: string, runId: string): Promi
   await ensureSchema();
   const integration = await getGitIntegration(projectId);
   if (!integration) throw new GitAutomationError("请先连接 GitHub 仓库", 409);
-  const automationToken = personalAccessToken() ?? (integration.installationId ? await createInstallationAccessToken(integration.installationId) : null);
+  const automationToken = integration.installationId ? await createInstallationAccessToken(integration.installationId) : personalAccessToken();
   if (!automationToken) throw new GitAutomationError(githubAppConfigured() ? "请先安装 GitHub App，并将仓库重新连接到对应 Installation" : "GitHub App 尚未配置；兼容模式也没有服务端 PAT", 409);
   const artifactRows = await database().prepare(`SELECT agent,kind,content FROM generation_artifacts WHERE project_id=? AND run_id=? ORDER BY created_at ASC`).bind(projectId, runId).all<D1Row>();
   if (!(artifactRows.results ?? []).length) throw new GitAutomationError("这个 Run 没有可同步工件", 404);

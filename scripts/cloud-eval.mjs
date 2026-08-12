@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 
@@ -92,10 +92,13 @@ try {
 
 await mkdir("test-results/cloud-eval", { recursive: true });
 await writeFile("test-results/cloud-eval/result.json", `${JSON.stringify({ jobId, status, result }, null, 2)}\n`);
+const callbackBody = JSON.stringify({ jobId, status, result });
+const callbackTimestamp = String(Math.floor(Date.now() / 1_000));
+const callbackSignature = createHmac("sha256", callbackToken).update(`${callbackTimestamp}.${callbackBody}`).digest("hex");
 const callback = await fetch(callbackUrl, {
   method: "POST",
-  headers: { Authorization: `Bearer ${callbackToken}`, "Content-Type": "application/json" },
-  body: JSON.stringify({ jobId, status, result }),
+  headers: { Authorization: `Bearer ${callbackToken}`, "Content-Type": "application/json", "X-Nucleus-Timestamp": callbackTimestamp, "X-Nucleus-Signature": `v1=${callbackSignature}` },
+  body: callbackBody,
 });
 if (!callback.ok) throw new Error(`Runner callback failed: ${callback.status} ${(await callback.text()).slice(0, 500)}`);
 if (status !== "passed") process.exitCode = 1;

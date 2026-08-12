@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { runDueAppBackups } from "@/lib/app-platform-db";
 import { exportPendingMeterUsage } from "@/lib/billing";
-import { deleteDueProjectDatabases } from "@/lib/database-provisioner";
+import { deleteDueProjectDatabases, reconcileProjectDatabases } from "@/lib/database-provisioner";
 import { ensureSchema } from "@/lib/db";
-import { evaluateOperationalSlos, recordServiceEvent } from "@/lib/observability";
+import { evaluateOperationalSlos, recordServiceEvent, retryPendingOperationalAlerts } from "@/lib/observability";
+import { retryPendingNotifications } from "@/lib/notifications";
 
 export const maxDuration = 60;
 
@@ -12,15 +13,18 @@ export async function POST(request: Request) {
   try {
     authorize(request);
     await ensureSchema();
-    const [backups, deletedDatabases, billing, slos, cleanup] = await Promise.all([
+    const [databases, backups, deletedDatabases, billing, notifications, alertDeliveries, slos, cleanup] = await Promise.all([
+      reconcileProjectDatabases(5),
       runDueAppBackups(20),
       deleteDueProjectDatabases(20).catch((error) => ({ deleted: [], failed: [{ projectId: "control-plane", error: error instanceof Error ? error.message : "清理失败" }] })),
       exportPendingMeterUsage(100).catch(() => ({ exported: 0, failed: 0, skipped: 1 })),
+      retryPendingNotifications(20),
+      retryPendingOperationalAlerts(20),
       evaluateOperationalSlos(),
       cleanupExpiredControlPlaneRows(),
     ]);
-    const result = { backups, deletedDatabases, billing, slos, cleanup, durationMs: Date.now() - startedAt, completedAt: new Date().toISOString() };
-    await recordServiceEvent({ service: "control-plane", operation: "maintenance", level: backups.failed.length || deletedDatabases.failed.length || billing.failed ? "warn" : "info", durationMs: result.durationMs, message: "定时维护任务完成", detail: result }).catch(() => undefined);
+    const result = { databases, backups, deletedDatabases, billing, notifications, alertDeliveries, slos, cleanup, durationMs: Date.now() - startedAt, completedAt: new Date().toISOString() };
+    await recordServiceEvent({ service: "control-plane", operation: "maintenance", level: databases.failed.length || backups.failed.length || deletedDatabases.failed.length || billing.failed || notifications.failed || alertDeliveries.failed ? "warn" : "info", durationMs: result.durationMs, message: "定时维护任务完成", detail: result }).catch(() => undefined);
     return Response.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const status = error instanceof MaintenanceError ? error.status : 500;

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "anonymous-1",
+    "cookie": ""
+  },
+  {
+    "name": "signed-in-example",
+    "cookie": "replace-with-a-dedicated-test-session-cookie"
+  }
+]

@@ -73,10 +73,12 @@ pnpm db:generate
 
 ```powershell
 pnpm test
-pnpm eval:fixed
+pnpm eval:product
+pnpm test:security
 pnpm test:e2e
 pnpm exec tsc --noEmit
 pnpm lint
+pnpm exec drizzle-kit check
 pnpm build
 git diff --check
 ```
@@ -85,14 +87,15 @@ git diff --check
 
 | 检查 | 结果 |
 |---|---:|
-| Vitest | 70/70 |
-| 固定 Manifest Eval | 25/25 |
-| Chromium E2E | 7/7 |
+| Vitest | 340/340 |
+| 产品与安全固定 Eval | 283/283 |
+| 专项安全 | 17/17 |
+| Chromium E2E | 9/9 |
 | TypeScript | 通过 |
 | ESLint | 通过 |
-| Vinext production build | 通过 |
+| Drizzle / Vinext production build | 通过 |
 
-25 个固定 Eval 只证明 Manifest 规范化和安全边界覆盖，不等于“生成任意应用的严格成功率”。要统计成功率，必须冻结更大的 Prompt 集、模型版本、评分规则、运行环境和人工验收标准。
+固定 Eval 只证明 Manifest 规范化、产品契约和安全边界覆盖，不等于“生成任意应用的严格成功率”。本轮商业 Provider、备份、签名、移动端和压测的最新 Runbook 见 [第 19 章](19-commercial-hardening-and-provider-runbook.md)。
 
 ## 6. 本地功能验收
 

@@ -6,6 +6,7 @@ import { normalizeGeneratedFiles } from "@/lib/runtime";
 import { projectOrganizationRole } from "@/lib/organization-db";
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 import type { AgentAudit, AgentEvent, AgentName, AgentPlan, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationStage, ModelUsage } from "@/lib/types";
+import { scheduleProjectDatabaseProvisioning } from "@/lib/background-tasks";
 
 export const maxDuration = 60;
 
@@ -165,6 +166,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             const metrics: GenerationMetrics = { usage: freshRun.usage, modelCalls: freshRun.modelCalls, repairCount: freshRun.repairCount, durationMs: Date.now() - Date.parse(freshRun.startedAt), model: freshRun.model };
             const quality = { ...review.deterministic, summary: `${review.summary}；${review.functionalChecks.filter((item) => item.passed).length}/${review.functionalChecks.length || 0} 条功能证据通过` };
             const saved = await saveGeneration(projectId, identity.ownerId, runId, plan, files, review.summary || `完成 ${plan.appName}`, freshRun.model, quality, metrics, architecture.runtime);
+            scheduleProjectDatabaseProvisioning(projectId);
             emit({ type: "complete", project: saved });
           } else {
             const fresh = await getProject(projectId, identity.ownerId);

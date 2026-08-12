@@ -1,10 +1,29 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "./db";
 import { verifyStripeWebhookSignature } from "./stripe-signature";
-import type { BillingAccount } from "./types";
+import type { BillingAccount, BillingInvoice } from "./types";
+import { entitledPlanForStatus } from "./billing-policy";
 
 type D1Row = Record<string, string | number | null>;
-type StripeObject = Record<string, unknown> & { id?: string; customer?: string; subscription?: string; status?: string; current_period_end?: number; metadata?: Record<string, string> };
+type StripeObject = Record<string, unknown> & {
+  id?: string;
+  object?: string;
+  customer?: string;
+  subscription?: string | { id?: string };
+  status?: string;
+  payment_status?: string;
+  currency?: string;
+  amount_due?: number;
+  amount_paid?: number;
+  hosted_invoice_url?: string | null;
+  invoice_pdf?: string | null;
+  current_period_end?: number;
+  period_start?: number;
+  period_end?: number;
+  created?: number;
+  client_reference_id?: string;
+  metadata?: Record<string, string>;
+};
 
 export class BillingError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -97,23 +116,39 @@ export async function processStripeWebhook(rawBody: string, signature: string | 
   const now = new Date().toISOString();
   const inserted = await database().prepare(`INSERT INTO billing_events (id,organization_id,provider_event_id,kind,status,payload_json,created_at,processed_at) VALUES (?,NULL,?,?,'processing',?,?,NULL) ON CONFLICT(provider_event_id) DO NOTHING`).bind(crypto.randomUUID(), event.id, event.type, boundedJson(rawBody), now).run();
   if (Number(inserted.meta.changes ?? 0) !== 1) return { received: true, duplicate: true };
+  let resolvedOrganizationId: string | null = null;
   try {
     const object = event.data.object;
-    const organizationId = object.metadata?.organization_id || (typeof object.client_reference_id === "string" ? object.client_reference_id : null);
-    if (event.type === "checkout.session.completed" && organizationId) {
+    const metadataOrganizationId = object.metadata?.organization_id || stringValue(object.client_reference_id);
+    const customerId = stringValue(object.customer);
+    const subscriptionId = stripeReferenceId(object.subscription);
+    resolvedOrganizationId = metadataOrganizationId ?? await findOrganizationForBillingObject(customerId, subscriptionId);
+    if (event.type === "checkout.session.completed" && resolvedOrganizationId) {
       const plan = object.metadata?.plan === "enterprise" ? "enterprise" : "team";
-      await upsertBillingAccount(organizationId, { customerId: stringValue(object.customer), subscriptionId: stringValue(object.subscription), status: "active", plan, periodEnd: null });
+      const status: BillingAccount["status"] = object.payment_status === "paid" || object.payment_status === "no_payment_required" ? "active" : "incomplete";
+      await upsertBillingAccount(resolvedOrganizationId, { customerId, subscriptionId, status, plan, periodEnd: null });
     } else if (event.type.startsWith("customer.subscription.")) {
-      const subscriptionId = stringValue(object.id);
-      const customerId = stringValue(object.customer);
-      const resolvedOrganizationId = organizationId ?? await findOrganizationForBillingObject(customerId, subscriptionId);
+      const currentSubscriptionId = stringValue(object.id) ?? subscriptionId;
+      resolvedOrganizationId = resolvedOrganizationId ?? await findOrganizationForBillingObject(customerId, currentSubscriptionId);
       if (resolvedOrganizationId) {
         const stripeStatus = event.type === "customer.subscription.deleted" ? "canceled" : normalizeStripeStatus(object.status);
         const plan = object.metadata?.plan === "enterprise" ? "enterprise" : object.metadata?.plan === "team" ? "team" : undefined;
-        await upsertBillingAccount(resolvedOrganizationId, { customerId, subscriptionId, status: stripeStatus, plan, periodEnd: typeof object.current_period_end === "number" ? new Date(object.current_period_end * 1_000).toISOString() : null });
+        await upsertBillingAccount(resolvedOrganizationId, { customerId, subscriptionId: currentSubscriptionId, status: stripeStatus, plan, periodEnd: unixTime(object.current_period_end) });
+      }
+    } else if (event.type.startsWith("invoice.")) {
+      resolvedOrganizationId = resolvedOrganizationId ?? await findOrganizationForBillingObject(customerId, subscriptionId);
+      if (resolvedOrganizationId && object.id) {
+        await upsertBillingInvoice(resolvedOrganizationId, object, now);
+        if (event.type === "invoice.payment_failed") {
+          await updateBillingStatus(resolvedOrganizationId, "past_due");
+        } else if (event.type === "invoice.paid") {
+          await updateBillingStatus(resolvedOrganizationId, "active");
+        } else if (event.type === "invoice.voided" || event.type === "invoice.marked_uncollectible") {
+          await updateBillingStatus(resolvedOrganizationId, "unpaid");
+        }
       }
     }
-    await database().prepare(`UPDATE billing_events SET organization_id=?,status='processed',processed_at=? WHERE provider_event_id=?`).bind(organizationId, new Date().toISOString(), event.id).run();
+    await database().prepare(`UPDATE billing_events SET organization_id=?,status='processed',processed_at=? WHERE provider_event_id=?`).bind(resolvedOrganizationId, new Date().toISOString(), event.id).run();
     return { received: true, duplicate: false };
   } catch (error) {
     await database().prepare(`UPDATE billing_events SET status='failed',processed_at=? WHERE provider_event_id=?`).bind(new Date().toISOString(), event.id).run();
@@ -148,11 +183,40 @@ export async function exportPendingMeterUsage(limit = 100): Promise<{ exported: 
   return { exported, failed, skipped: 0 };
 }
 
+export async function listBillingInvoices(organizationId: string, limit = 20): Promise<BillingInvoice[]> {
+  await ensureSchema();
+  const rows = await database().prepare(`SELECT * FROM billing_invoices WHERE organization_id=? ORDER BY created_at DESC LIMIT ?`).bind(organizationId, Math.max(1, Math.min(100, limit))).all<D1Row>();
+  return (rows.results ?? []).map(billingInvoiceFromRow);
+}
+
 async function upsertBillingAccount(organizationId: string, input: { customerId: string | null; subscriptionId: string | null; status: BillingAccount["status"]; plan?: BillingAccount["plan"]; periodEnd: string | null }): Promise<void> {
   const now = new Date().toISOString();
   const resolvedPlan = input.plan ?? (await getBillingAccount(organizationId)).plan;
   await database().prepare(`INSERT INTO billing_accounts (organization_id,provider,customer_id,subscription_id,status,plan,current_period_end,created_at,updated_at) VALUES (?,'stripe',?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET customer_id=COALESCE(excluded.customer_id,billing_accounts.customer_id),subscription_id=COALESCE(excluded.subscription_id,billing_accounts.subscription_id),status=excluded.status,plan=excluded.plan,current_period_end=excluded.current_period_end,updated_at=excluded.updated_at`).bind(organizationId, input.customerId, input.subscriptionId, input.status, resolvedPlan, input.periodEnd, now, now).run();
-  if (resolvedPlan === "team" || resolvedPlan === "enterprise") await database().prepare(`UPDATE organizations SET plan=?,updated_at=? WHERE id=?`).bind(resolvedPlan, now, organizationId).run();
+  await database().prepare(`UPDATE organizations SET plan=?,updated_at=? WHERE id=?`).bind(entitledPlanForStatus(input.status, resolvedPlan), now, organizationId).run();
+}
+
+async function updateBillingStatus(organizationId: string, status: BillingAccount["status"]): Promise<void> {
+  const account = await getBillingAccount(organizationId);
+  await upsertBillingAccount(organizationId, {
+    customerId: account.customerId,
+    subscriptionId: account.subscriptionId,
+    status,
+    plan: account.plan,
+    periodEnd: account.currentPeriodEnd,
+  });
+}
+
+async function upsertBillingInvoice(organizationId: string, object: StripeObject, fallbackCreatedAt: string): Promise<void> {
+  const providerInvoiceId = stringValue(object.id);
+  if (!providerInvoiceId) return;
+  const createdAt = unixTime(object.created) ?? fallbackCreatedAt;
+  const updatedAt = new Date().toISOString();
+  await database().prepare(`INSERT INTO billing_invoices (id,organization_id,provider_invoice_id,status,currency,amount_due,amount_paid,hosted_invoice_url,invoice_pdf,period_start,period_end,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_invoice_id) DO UPDATE SET organization_id=excluded.organization_id,status=excluded.status,currency=excluded.currency,amount_due=excluded.amount_due,amount_paid=excluded.amount_paid,hosted_invoice_url=excluded.hosted_invoice_url,invoice_pdf=excluded.invoice_pdf,period_start=excluded.period_start,period_end=excluded.period_end,updated_at=excluded.updated_at`).bind(
+    crypto.randomUUID(), organizationId, providerInvoiceId, stringValue(object.status) ?? "unknown", stringValue(object.currency)?.toLowerCase() ?? "usd",
+    integerValue(object.amount_due), integerValue(object.amount_paid), safeHttpsUrl(object.hosted_invoice_url), safeHttpsUrl(object.invoice_pdf),
+    unixTime(object.period_start), unixTime(object.period_end), createdAt, updatedAt,
+  ).run();
 }
 
 async function findOrganizationForBillingObject(customerId: string | null, subscriptionId: string | null): Promise<string | null> {
@@ -179,6 +243,24 @@ function billingAccountFromRow(row: D1Row): BillingAccount {
   };
 }
 
+function billingInvoiceFromRow(row: D1Row): BillingInvoice {
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    providerInvoiceId: String(row.provider_invoice_id),
+    status: String(row.status),
+    currency: String(row.currency),
+    amountDue: Number(row.amount_due),
+    amountPaid: Number(row.amount_paid),
+    hostedInvoiceUrl: row.hosted_invoice_url ? String(row.hosted_invoice_url) : null,
+    invoicePdf: row.invoice_pdf ? String(row.invoice_pdf) : null,
+    periodStart: row.period_start ? String(row.period_start) : null,
+    periodEnd: row.period_end ? String(row.period_end) : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 function normalizeStripeStatus(value: unknown): BillingAccount["status"] {
   const supported = new Set<BillingAccount["status"]>(["incomplete", "trialing", "active", "past_due", "unpaid", "paused", "canceled"]);
   return supported.has(value as BillingAccount["status"]) ? value as BillingAccount["status"] : "incomplete";
@@ -194,6 +276,30 @@ function normalizeOrigin(value: string): string {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
+}
+
+function stripeReferenceId(value: unknown): string | null {
+  if (typeof value === "string" && value) return value;
+  if (value && typeof value === "object" && typeof (value as { id?: unknown }).id === "string") return (value as { id: string }).id;
+  return null;
+}
+
+function unixTime(value: unknown): string | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value * 1_000).toISOString() : null;
+}
+
+function integerValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function safeHttpsUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseJson<T>(value: string, fallback: T): T {

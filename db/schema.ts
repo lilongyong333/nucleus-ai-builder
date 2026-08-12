@@ -190,6 +190,11 @@ export const appBackups = sqliteTable("app_backups", {
   snapshotJson: text("snapshot_json").notNull(),
   recordCount: integer("record_count").notNull(),
   createdBy: text("created_by").notNull(),
+  archiveKey: text("archive_key"),
+  archiveStatus: text("archive_status").notNull().default("not-configured"),
+  archiveBytes: integer("archive_bytes"),
+  archiveError: text("archive_error"),
+  expiresAt: text("expires_at"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_app_backups_project_created").on(table.projectId, table.createdAt)]);
 
@@ -292,6 +297,10 @@ export const appDatabaseResources = sqliteTable("app_database_resources", {
   databaseName: text("database_name").notNull(),
   locationHint: text("location_hint"),
   schemaVersion: integer("schema_version").notNull().default(0),
+  desiredSchemaVersion: integer("desired_schema_version").notNull().default(0),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextRetryAt: text("next_retry_at"),
+  leaseExpiresAt: text("lease_expires_at"),
   lastMigrationAt: text("last_migration_at"),
   lastBackupAt: text("last_backup_at"),
   retentionUntil: text("retention_until"),
@@ -363,9 +372,16 @@ export const notificationDeliveries = sqliteTable("notification_deliveries", {
   provider: text("provider").notNull(),
   providerMessageId: text("provider_message_id"),
   error: text("error"),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: text("next_attempt_at"),
+  lastAttemptAt: text("last_attempt_at"),
   createdAt: text("created_at").notNull(),
   deliveredAt: text("delivered_at"),
-}, (table) => [index("idx_notification_deliveries_project_created").on(table.projectId, table.createdAt)]);
+}, (table) => [
+  index("idx_notification_deliveries_project_created").on(table.projectId, table.createdAt),
+  index("idx_notification_deliveries_retry").on(table.status, table.nextAttemptAt),
+]);
 
 export const billingAccounts = sqliteTable("billing_accounts", {
   organizationId: text("organization_id").primaryKey(),
@@ -393,6 +409,25 @@ export const billingEvents = sqliteTable("billing_events", {
   index("idx_billing_events_org_created").on(table.organizationId, table.createdAt),
 ]);
 
+export const billingInvoices = sqliteTable("billing_invoices", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  providerInvoiceId: text("provider_invoice_id").notNull(),
+  status: text("status").notNull(),
+  currency: text("currency").notNull(),
+  amountDue: integer("amount_due").notNull().default(0),
+  amountPaid: integer("amount_paid").notNull().default(0),
+  hostedInvoiceUrl: text("hosted_invoice_url"),
+  invoicePdf: text("invoice_pdf"),
+  periodStart: text("period_start"),
+  periodEnd: text("period_end"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_billing_invoices_provider").on(table.providerInvoiceId),
+  index("idx_billing_invoices_org_created").on(table.organizationId, table.createdAt),
+]);
+
 export const serviceEvents = sqliteTable("service_events", {
   id: text("id").primaryKey(),
   projectId: text("project_id"),
@@ -408,4 +443,24 @@ export const serviceEvents = sqliteTable("service_events", {
 }, (table) => [
   index("idx_service_events_project_created").on(table.projectId, table.createdAt),
   index("idx_service_events_level_created").on(table.level, table.createdAt),
+]);
+
+export const operationalAlerts = sqliteTable("operational_alerts", {
+  id: text("id").primaryKey(),
+  fingerprint: text("fingerprint").notNull(),
+  projectId: text("project_id"),
+  organizationId: text("organization_id"),
+  service: text("service").notNull(),
+  operation: text("operation").notNull(),
+  severity: text("severity").notNull(),
+  status: text("status").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: text("next_attempt_at"),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  sentAt: text("sent_at"),
+}, (table) => [
+  index("idx_operational_alerts_retry").on(table.status, table.nextAttemptAt),
+  index("idx_operational_alerts_fingerprint_created").on(table.fingerprint, table.createdAt),
 ]);

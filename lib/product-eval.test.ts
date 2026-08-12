@@ -37,13 +37,13 @@ const archetypes: EvalCase[] = [
   { id: "project", prompt: "项目 task checklist", collection: "tasks", access: "owner", auth: "anonymous" },
 ];
 
-const variants = ["桌面端优先", "移动端优先", "需要可访问性", "需要刷新后数据保留"] as const;
+const variants = ["桌面端优先", "移动端优先", "需要可访问性", "需要刷新后数据保留", "需要触屏操作", "需要键盘操作", "需要高对比度", "需要中英双语界面"] as const;
 const cases = archetypes.flatMap((base) => variants.map((variant, index) => ({ ...base, id: `${base.id}-${index + 1}`, prompt: `${base.prompt}；${variant}` })));
 
-describe("120-case fixed product contract eval", () => {
-  it("keeps the fixed corpus at 120 independently addressable cases", () => {
-    expect(cases).toHaveLength(120);
-    expect(new Set(cases.map((item) => item.id)).size).toBe(120);
+describe("240-case fixed product contract eval", () => {
+  it("keeps the fixed corpus at 240 independently addressable cases", () => {
+    expect(cases).toHaveLength(240);
+    expect(new Set(cases.map((item) => item.id)).size).toBe(240);
   });
 
   it.each(cases)("maps $id to a bounded isolated runtime contract", (testCase) => {

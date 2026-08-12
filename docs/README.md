@@ -1,6 +1,6 @@
 # Nucleus 文档中心
 
-> 当前 GitHub 最终代码基线：commit `b14e81e00d23865640fe318c9ef81abcd82bcf24`，GitHub Actions 通过，2026-08-10。`www.llynb.cc` 仍运行上一版稳定部署，因此代码已实现但尚未配置外部 Provider 的能力会在文档中明确标注，不与线上状态混淆。
+> 当前代码基线：`agent/metagpt-quality-gate` 分支 2026-08-12 商业化加固版。发布门为 Vitest 340/340、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9，并完成 1,000 请求/40 并发基线。代码、Sites 部署和外部 Provider 账号是否已配置是三个不同状态，文档分别标注。
 
 ## 想从零照着做
 
@@ -23,7 +23,9 @@
 15. [P2/P3 全栈平台升级](learning/14-p2-p3-full-stack-platform.md)；
 16. [Race、可视化编辑、Runner 与 Git](learning/15-race-visual-runner-git.md)；
 17. [团队协作与生产运维](learning/16-team-operations-observability.md)；
-18. [P2/P3 部署与验收](learning/17-p2-p3-deployment-acceptance.md)。
+18. [P2/P3 部署与验收](learning/17-p2-p3-deployment-acceptance.md)；
+19. [Python 手撕多 Agent](learning/18-python-multi-agent-from-scratch.md)；
+20. [商业化加固与 Provider 落地](learning/19-commercial-hardening-and-provider-runbook.md)。
 
 ## 想快速理解最终方案
 
@@ -56,6 +58,8 @@
 | `learning/01–12` | 核心功能的分主题教学 |
 | `learning/13` | 可照做的复现/重建/发布 Runbook |
 | `learning/14–17` | P2/P3 全栈、Race、Runner、协作、运维和部署验收 |
+| `learning/18` | Python 初学者可手撕的多 Agent API 协作闭环 |
+| `learning/19` | Provisioner、长期备份、GitHub App、Stripe、Outbox、安全和压测真源 |
 | `CUSTOM-DOMAIN-DEPLOYMENT.md` | 自定义域名、DNS、验收和回滚真源 |
 | `DESIGN.md` | 当前架构和关键取舍 |
 | `PROGRESS.md` | 每轮验证事实 |

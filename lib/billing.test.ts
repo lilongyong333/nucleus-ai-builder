@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { verifyStripeWebhookSignature } from "./stripe-signature";
+import { entitledPlanForStatus } from "./billing-policy";
 
 describe("Stripe raw-body webhook verification", () => {
   it("accepts a valid v1 HMAC and rejects tampering and stale timestamps", async () => {
@@ -14,5 +15,19 @@ describe("Stripe raw-body webhook verification", () => {
     expect(await verifyStripeWebhookSignature(`${body} `, header, secret, timestamp * 1_000)).toBe(false);
     expect(await verifyStripeWebhookSignature(body, header, secret, (timestamp + 301) * 1_000)).toBe(false);
     expect(await verifyStripeWebhookSignature(body, `t=not-a-number,v1=${signature}`, secret, timestamp * 1_000)).toBe(false);
+  });
+});
+
+describe("Stripe entitlement fail-closed policy", () => {
+  it.each([
+    ["trialing", "team"],
+    ["active", "enterprise"],
+    ["past_due", "team"],
+  ] as const)("keeps %s subscriptions entitled", (status, plan) => {
+    expect(entitledPlanForStatus(status, plan)).toBe(plan);
+  });
+
+  it.each(["configuration-required", "checkout-open", "incomplete", "unpaid", "paused", "canceled"] as const)("downgrades %s subscriptions to demo", (status) => {
+    expect(entitledPlanForStatus(status, "enterprise")).toBe("demo");
   });
 });
