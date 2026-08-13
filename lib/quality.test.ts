@@ -147,4 +147,13 @@ describe("generated app quality gate", () => {
     });
     expect(checks.every((check) => check.severity === "pass")).toBe(true);
   });
+
+  it("blocks author CSS that makes a hidden finance empty state visible", () => {
+    const checks = reviewProductContract("finance budget expense tracker", {
+      "index.html": '<main><form><input name="amount"><select name="type"><option>expense</option></select><button>Add</button></form><p id="empty" class="empty-state">No transactions</p><output id="balance">Total balance</output></main>',
+      "styles.css": ".empty-state{display:flex}",
+      "script.js": `let transactions=JSON.parse(localStorage.getItem('transactions')||'[]'); function render(){ const total=transactions.reduce((sum,item)=>sum+item.amount,0); document.querySelector('#balance').textContent=String(total); document.querySelector('#empty').hidden=transactions.length!==0; } document.querySelector('form').addEventListener('submit',()=>{ transactions.push({amount:1,type:'expense'}); localStorage.setItem('transactions',JSON.stringify(transactions)); render(); }); render();`,
+    });
+    expect(checks.find((check) => check.id === "finance-hidden-visibility")?.severity).toBe("error");
+  });
 });

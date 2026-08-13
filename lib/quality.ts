@@ -349,8 +349,13 @@ function hasSafeElapsedFloor(script: string): boolean {
 
 function financeProductChecks(files: GeneratedFiles): AppQualityCheck[] {
   const html = files["index.html"];
+  const css = files["styles.css"];
   const script = files["script.js"];
   const source = `${html}\n${script}`;
+  const togglesHiddenAttribute = /(?:hidden\s*=|setAttribute\s*\(\s*["']hidden)/i.test(script);
+  const emptyStateForcesVisibleDisplay = /\.empty-state\s*\{[\s\S]*?\bdisplay\s*:\s*(?!none\b)[^;}]+/i.test(css);
+  const hasHiddenDisplayOverride = /(?:\[hidden\]|\.empty-state\[hidden\])\s*\{[\s\S]*?\bdisplay\s*:\s*none\b/i.test(css);
+  const togglesInlineDisplay = /style\.display\s*=/i.test(script);
   return [
     makeCheck({
       id: "finance-real-entry",
@@ -376,6 +381,15 @@ function financeProductChecks(files: GeneratedFiles): AppQualityCheck[] {
       passed: /(?:empty|空状态|暂无|no-transactions|noData)/i.test(source) && /(?:\.length|length\s*[=!<>])/.test(script) && /(?:hidden\s*=|classList\.(?:add|remove|toggle)|style\.display|setAttribute\s*\(\s*["']hidden)/i.test(script),
       passDetail: "检测到交易为空/非空时显式显示或隐藏空状态",
       failDetail: "空状态没有与交易数量联动，新增记录后仍可能显示“暂无数据”",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "finance-hidden-visibility",
+      label: "空状态真实隐藏",
+      passed: !togglesHiddenAttribute || !emptyStateForcesVisibleDisplay || hasHiddenDisplayOverride || togglesInlineDisplay,
+      passDetail: "空状态 hidden 切换不会被作者样式中的 display 规则重新显示",
+      failDetail: "脚本给空状态设置了 hidden，但 .empty-state 的 display 样式会把它继续显示；请在 styles.css 添加 [hidden]{display:none!important} 或改用可靠的显隐方式",
       weight: 0,
       blocking: true,
     }),
@@ -427,6 +441,7 @@ function qualityCheckFile(checkId: string): keyof GeneratedFiles | "application"
   if (["javascript-syntax", "function-uniqueness", "runtime-safety"].includes(checkId)) return "script.js";
   if (["semantic-html", "viewport", "accessible-names", "self-contained"].includes(checkId)) return "index.html";
   if (["responsive-css", "keyboard-focus"].includes(checkId)) return "styles.css";
+  if (checkId === "finance-hidden-visibility") return "styles.css";
   if (checkId.startsWith("snake-") || checkId.startsWith("typing-") || checkId.startsWith("finance-")) return "script.js";
   return "application";
 }

@@ -86,9 +86,12 @@ type ChatOptions = { models?: string[]; requestTimeoutMs?: number; firstTokenTim
 function codeChatOptions(): ChatOptions {
   return {
     models: activeCodeModels(),
-    requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 170_000, 8_000, 180_000),
-    firstTokenTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_FIRST_TOKEN_TIMEOUT_MS", 75_000, 8_000, 120_000),
-    fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 50_000, 5_000, 90_000),
+    requestTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS", 175_000, 8_000, 210_000),
+    // GLM often reasons for more than a minute before emitting the first
+    // visible code token. A short first-token fence caused valid JavaScript
+    // generations to be cancelled just before output began.
+    firstTokenTimeoutMs: runtimeInteger("OPENCODE_GO_CODE_FIRST_TOKEN_TIMEOUT_MS", 140_000, 8_000, 175_000),
+    fallbackReserveMs: runtimeInteger("OPENCODE_GO_CODE_FALLBACK_RESERVE_MS", 70_000, 5_000, 120_000),
   };
 }
 

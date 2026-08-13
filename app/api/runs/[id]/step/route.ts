@@ -52,12 +52,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         // heartbeat below. Give a complete file enough time to close its
         // artifact fence; the model gateway still enforces finite call/token
         // budgets and retains a fallback window.
-        const deadline = setTimeout(() => abortController.abort(new DOMException("Stage deadline exceeded", "TimeoutError")), 245_000);
+        const deadline = setTimeout(() => abortController.abort(new DOMException("Stage deadline exceeded", "TimeoutError")), 285_000);
         const heartbeat = setInterval(() => {
           if (!abortController.signal.aborted && !streamClosed) controller.enqueue(encoder.encode("\n"));
         }, 8_000);
         const emit = (event: AgentEvent) => {
-          if (!abortController.signal.aborted && !streamClosed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          // A stage-deadline abort must still be visible to the browser. The
+          // old aborted check swallowed the terminal event and left the UI in
+          // a misleading reconnect loop.
+          if (!streamClosed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         };
         const auditFrom = (event: Awaited<ReturnType<typeof recordNextGenerationEvent>>): AgentAudit => ({
           runId: event.runId,
@@ -195,7 +198,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         } catch (error) {
           const errorAttempts = attemptsFromError(error);
           if (errorAttempts.length) await recordModelAttempts(runId, projectId, agent, stage, errorAttempts.map(toPersistedAttempt)).catch(() => undefined);
-          if (abortController.signal.aborted) return;
           const message = friendlyError(error, stage);
           const previousFailures = run.events.filter((event) => event.phase === `${stage}:failure` && event.state === "error").length;
           const terminal = error instanceof TerminalWorkflowError || (error instanceof ModelGatewayError && error.kind === "budget") || previousFailures >= 2;
@@ -215,7 +217,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           clearInterval(heartbeat);
           clearTimeout(deadline);
           await releaseGenerationStep(runId, stepToken).catch(() => undefined);
-          if (!abortController.signal.aborted && !streamClosed) controller.close();
+          // Closing the NDJSON response is required even after the stage
+          // deadline aborted the provider request; otherwise the client can
+          // remain on "connecting" without receiving a retry boundary.
+          if (!streamClosed) controller.close();
         }
       })();
       const context = getRequestExecutionContext();
