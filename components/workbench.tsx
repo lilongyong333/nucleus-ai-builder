@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowLeft, Bot, Boxes, Check, ChevronDown, CircleAlert, Clock3, Code2, Copy, Database, Download, ExternalLink, FileCode2, FlaskConical, Globe2, HardDrive, History, Laptop, ListChecks, LoaderCircle, Maximize2, MessageSquareText, Mic, MicOff, Monitor, MousePointer2, PanelLeftClose, Play, Plus, RefreshCcw, RotateCcw, Send, ServerCog, Share2, ShieldCheck, Smartphone, Sparkles, Square, SquareTerminal, Trash2, UserRound, WandSparkles, X } from "lucide-react";
 import { composePreview } from "@/lib/runtime";
-import type { AgentEvent, AgentPlan, AppBackup, AppDatabaseResource, AppManifest, AppQualityReport, AppRuntimeSession, BillingAccount, BillingInvoice, GeneratedFiles, GenerationArtifactKind, GitHubAppInstallation, GitIntegration, NotificationDelivery, OperationalSummary, Organization, Project, ProjectApproval, ProjectMessage, ProvisioningEvent, RunnerJob, RuntimeEvidence } from "@/lib/types";
+import type { AgentEvent, AgentPlan, AppBackup, AppDatabaseResource, AppManifest, AppQualityReport, AppRuntimeSession, BillingAccount, BillingInvoice, GeneratedFiles, GenerationArtifactKind, GitHubAppInstallation, GitIntegration, NotificationDelivery, OperationalSummary, Organization, Project, ProjectApproval, ProjectIntake, ProjectMessage, ProvisioningEvent, RunnerJob, RuntimeEvidence } from "@/lib/types";
 
 type TimelineItem = { id: string; agent: string; title: string; detail: string; state: "working" | "done" | "error"; time: string };
 type LiveStreamState = { agent: string; phase: string; label: string; text: string; totalChars: number; done: boolean; model: string };
@@ -68,6 +68,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const autoRepairVersionsRef = useRef(new Set<string>());
   const autoProvisionedVersionsRef = useRef(new Set<string>());
+  const intakeRequestedRef = useRef(false);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -80,6 +81,9 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [isListening, setIsListening] = useState(false);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [liveStream, setLiveStream] = useState<LiveStreamState | null>(null);
+  const [intakeLoading, setIntakeLoading] = useState(false);
+  const [intakeError, setIntakeError] = useState("");
+  const [intakeStarting, setIntakeStarting] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [livePlan, setLivePlan] = useState<AgentPlan | null>(null);
   const [liveQuality, setLiveQuality] = useState<AppQualityReport | null>(null);
@@ -124,6 +128,7 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   const handleEvent = useCallback((event: AgentEvent) => {
     if (event.type === "status") {
+      if (event.state === "working") setLiveStream(null);
       setTimeline((items) => [...items.filter((item) => !(item.agent === event.agent && item.state === "working")), { id: crypto.randomUUID(), agent: event.agent, title: event.title, detail: event.detail, state: event.state, time: nowTime() }]);
     } else if (event.type === "progress") {
       setLiveStream((current) => {
@@ -290,6 +295,38 @@ export function Workbench({ projectId }: { projectId: string }) {
     }
   }, [driveRun, projectId, raceMode]);
 
+  const requestIntake = useCallback(async (force = false) => {
+    if (intakeRequestedRef.current && !force) return;
+    intakeRequestedRef.current = true;
+    setIntakeLoading(true);
+    setIntakeError("");
+    try {
+      const response = await fetch(`/api/projects/${projectId}/intake`, { method: "POST" });
+      const data = await response.json().catch(() => ({})) as { error?: string; project?: Project; recovered?: boolean };
+      if (!response.ok || !data.project?.intake) throw new Error(data.error || "Iris 没有形成可选择的产品方向");
+      setProject(data.project);
+      if (data.recovered) setNotice("模型暂时不可用，Iris 已用本地产品规则恢复三个可执行方向");
+    } catch (error) {
+      intakeRequestedRef.current = false;
+      setIntakeError(error instanceof Error ? error.message : "需求澄清失败");
+    } finally {
+      setIntakeLoading(false);
+    }
+  }, [projectId]);
+
+  const selectIntakeOption = useCallback(async (optionId: string) => {
+    if (!project?.intake || intakeStarting || generatingRef.current) return;
+    const option = project.intake.options.find((candidate) => candidate.id === optionId);
+    if (!option) return;
+    setIntakeStarting(optionId);
+    const expandedPrompt = `${project.prompt}\n\n产品方向：${option.label}\n${option.promptSuffix}\n\n交付要求：必须由真实多 Agent 流水线生成代码、执行确定性质量门并保存审计记录；禁止使用与本需求无关的预制 Demo。`;
+    try {
+      await runGenerate(expandedPrompt);
+    } finally {
+      setIntakeStarting("");
+    }
+  }, [intakeStarting, project, runGenerate]);
+
   const cancelCurrentGeneration = useCallback(async () => {
     setQueuePaused(true);
     generationControllerRef.current?.abort();
@@ -375,6 +412,12 @@ export function Workbench({ projectId }: { projectId: string }) {
       setNotice(message);
     }).finally(() => setLoading(false));
   }, [projectId, runGenerate]);
+
+  useEffect(() => {
+    if (loading || !project || project.status !== "draft" || project.currentVersionId || project.runs.length > 0 || project.intake) return;
+    const timer = window.setTimeout(() => void requestIntake(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, project, requestIntake]);
 
   const runtimeVersionId = project?.currentVersionId;
   const runtimeManifestVersionId = project?.manifest?.versionId;
@@ -523,7 +566,13 @@ export function Workbench({ projectId }: { projectId: string }) {
   const previewFiles = useMemo(() => {
     if (!project) return null;
     if (project.currentVersionId) return project.files;
-    return completeRunFiles(project.runs[0]);
+    const partial = runFiles(project.runs[0]);
+    if (!partial["index.html"]) return null;
+    return {
+      "index.html": partial["index.html"],
+      "styles.css": partial["styles.css"] ?? "body{font-family:system-ui,sans-serif;margin:0;padding:32px;color:#252820;background:#f5f5ef}*{box-sizing:border-box}",
+      "script.js": partial["script.js"] ?? "",
+    };
   }, [project]);
   const srcDoc = useMemo(() => previewFiles ? composePreview(previewFiles, runtimeSession ? {
     projectId,
@@ -828,9 +877,10 @@ export function Workbench({ projectId }: { projectId: string }) {
   const codePaths = Object.keys(codeFiles) as Array<keyof GeneratedFiles>;
   const artifactFileCount = latestRun?.artifacts.filter((artifact) => ["index.html", "styles.css", "script.js"].includes(artifact.kind)).length ?? 0;
   const isCandidatePreview = !hasSavedVersion && Boolean(previewFiles);
+  const isProgressivePreview = isCandidatePreview && artifactFileCount < 3;
   const displayTimeline = timeline.length > 0 ? timeline : timelineFromProject(project);
   const currentAgent = liveStream?.agent ?? displayTimeline.at(-1)?.agent ?? "Iris";
-  const statusLabel = busy ? "生成中" : project.status === "error" ? "生成失败" : project.status === "ready" ? "已保存" : "草稿";
+  const statusLabel = busy ? "生成中" : project.status === "error" ? "生成失败" : project.status === "ready" ? "已保存" : "需求讨论";
   const lastServerMessage = project.messages.at(-1);
   const shouldShowActivePrompt = Boolean(activePrompt && !(lastServerMessage?.role === "user" && lastServerMessage.content === activePrompt));
   const visibleMessages: ProjectMessage[] = shouldShowActivePrompt
@@ -862,6 +912,15 @@ export function Workbench({ projectId }: { projectId: string }) {
             <ConversationMessage message={message} pending={message.id === "active-prompt"} onCopy={(content) => { void navigator.clipboard.writeText(content); setNotice("消息已复制"); }} />
             {message.id === activityAfterMessageId && (busy || displayTimeline.length > 0) && <AgentActivityPanel busy={busy} currentAgent={currentAgent} elapsedSeconds={elapsedSeconds} timeline={displayTimeline} liveStream={liveStream} plan={livePlan ?? project.plan} quality={liveQuality} run={latestRun} />}
           </div>)}
+          {project.status === "draft" && project.runs.length === 0 && <IntakeChoicePanel
+            intake={project.intake}
+            loading={intakeLoading}
+            error={intakeError}
+            starting={intakeStarting}
+            onRetry={() => void requestIntake(true)}
+            onSelect={(optionId) => void selectIntakeOption(optionId)}
+            onDirect={() => void runGenerate(project.prompt)}
+          />}
           <div ref={conversationEndRef} />
         </div>
 
@@ -885,7 +944,7 @@ export function Workbench({ projectId }: { projectId: string }) {
             <button type="button" className={raceMode ? "active race-mode" : ""} onClick={() => setRaceMode((enabled) => !enabled)} disabled={busy} aria-label={raceMode ? "关闭 Race Mode" : "开启 Race Mode"}><FlaskConical size={16} /></button>
             <button type="button" className={isListening ? "listening" : ""} onClick={toggleVoiceInput} aria-label={isListening ? "停止语音输入" : "开始语音输入"}>{isListening ? <MicOff size={16} /> : <Mic size={16} />}</button>
             <span>{busy ? "Return 加入队列" : raceMode ? "Race · 双模型并行" : "Return 发送"}<small>Shift + Return 换行</small></span>
-            {busy ? <button type="button" className="composer-submit stop" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : (project.status === "error" || project.status === "draft") && requestText.trim().length < 3 ? <button type="button" className="composer-submit" onClick={() => void runGenerate(project.prompt)} aria-label={project.status === "draft" ? "开始正式构建" : "重试上次生成"}>{project.status === "draft" ? <WandSparkles size={14} /> : <RefreshCcw size={14} />}</button> : <button className="composer-submit" disabled={requestText.trim().length < 3} aria-label="发送修改需求"><Send size={15} /></button>}
+            {busy ? <button type="button" className="composer-submit stop" onClick={() => void cancelCurrentGeneration()} aria-label="取消生成"><Square size={14} /></button> : project.status === "error" && requestText.trim().length < 3 ? <button type="button" className="composer-submit" onClick={() => void runGenerate(project.prompt)} aria-label="重试上次生成"><RefreshCcw size={14} /></button> : <button className="composer-submit" disabled={requestText.trim().length < 3} aria-label={project.status === "draft" ? "补充需求并直接构建" : "发送修改需求"}><Send size={15} /></button>}
           </div>
         </form>
       </aside>
@@ -898,7 +957,7 @@ export function Workbench({ projectId }: { projectId: string }) {
           <div className="canvas-actions">
             <button className={showConsole ? "active" : ""} onClick={() => { setActiveTab("preview"); setShowConsole((open) => !open); }} aria-label="切换控制台"><SquareTerminal size={15} /></button>
             <button className={pickerEnabled ? "active picker" : ""} onClick={toggleElementPicker} aria-label="选择页面元素进行局部修改" disabled={activeTab !== "preview" || !previewFiles}><MousePointer2 size={15} /></button>
-            {activeTab === "preview" && previewFiles && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{previewState === "checking" ? "启动校验中" : previewState === "passed" ? isCandidatePreview ? "候选工件可启动" : "已保存版本启动通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}
+            {activeTab === "preview" && previewFiles && <><div className={`runtime-status ${previewState}`}>{previewState === "checking" ? <LoaderCircle className="spin" size={12} /> : previewState === "passed" ? <Check size={12} /> : <CircleAlert size={12} />}<span>{isProgressivePreview ? `渐进预览 ${artifactFileCount}/3` : previewState === "checking" ? "启动校验中" : previewState === "passed" ? isCandidatePreview ? "候选工件可启动" : "已保存版本启动通过" : "发现运行错误"}</span></div><div className="device-toggle"><button className={device === "desktop" ? "active" : ""} onClick={() => setDevice("desktop")} aria-label="桌面预览"><Monitor size={15} /></button><button className={device === "mobile" ? "active" : ""} onClick={() => setDevice("mobile")} aria-label="手机预览"><Smartphone size={15} /></button></div></>}
             <button onClick={reloadPreview} aria-label="刷新" disabled={!previewFiles}><RefreshCcw size={15} /></button><button onClick={() => iframeRef.current?.requestFullscreen()} aria-label="全屏" disabled={!previewFiles}><Maximize2 size={15} /></button>
           </div>
         </div>
@@ -906,8 +965,12 @@ export function Workbench({ projectId }: { projectId: string }) {
         {previewError && <div className="runtime-error"><CircleAlert size={16} /><div><strong>预览发现运行错误</strong><span>{previewError}</span></div><button onClick={() => void runGenerate(`请修复这个运行错误，并保持当前功能：${previewError}`)} disabled={busy}><Sparkles size={14} /> 让 Ray 修复</button><button className="icon-button" onClick={() => setPreviewError("")}><X size={14} /></button></div>}
 
         {activeTab === "preview" ? <div className={`preview-stage ${device}`}>
-          {busy && <section className="generation-stream-card" aria-live="polite"><header><span className={`agent-avatar small ${agentTone[currentAgent] ?? "iris"}`}>{currentAgent.slice(0, 1)}</span><div><small>LIVE GENERATION</small><strong>{liveStream?.label ?? displayTimeline.at(-1)?.title ?? "正在连接模型"}</strong></div><time>{elapsedSeconds}s</time></header><pre>{liveStream?.text || "等待模型返回第一个内容片段…"}<i /></pre><footer><span>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 个字符已实时接收` : "正在建立流式连接"}</span><b>{liveStream?.done ? "本阶段完成" : "实时输出中"}</b></footer></section>}
-          {previewFiles ? <div className={`preview-browser ${isCandidatePreview ? "candidate" : ""}`}><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div>{isCandidatePreview ? <b>候选工件 · 待 Ray 审查</b> : <Laptop size={14} />}</div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div> : <section className="empty-app-canvas"><span><Boxes size={24} /></span><p>VERSION 0 · NO GENERATED APP</p><h2>{busy ? "团队正在构建第一版应用" : project.status === "error" ? "上一轮没有形成可用版本" : "需求已保存，等待正式构建"}</h2><small>{busy ? `已持久化 ${artifactFileCount}/3 个代码文件；刷新或断线后可从当前阶段继续。` : "这里不会再展示与需求无关的预制 Demo。只有真实生成并通过 Ray 质量门的工件才会成为 v1。"}</small><div><b className={latestRun?.artifacts.some((item) => item.kind === "requirements") ? "done" : ""}>Iris 需求</b><b className={latestRun?.artifacts.some((item) => item.kind === "architecture") ? "done" : ""}>Bob 架构</b><b className={artifactFileCount === 3 ? "done" : ""}>Alex 代码 {artifactFileCount}/3</b><b className={latestRun?.artifacts.some((item) => item.kind === "quality") ? "done" : ""}>Ray 质量</b></div>{!busy && <button onClick={() => void runGenerate(project.prompt)}><WandSparkles size={15} /> {project.status === "error" ? "从头重试正式工作流" : "开始正式构建"}</button>}</section>}
+          <div className={`generation-workspace ${busy ? "building" : "idle"}`}>
+            <div className="generation-product-surface">
+              {previewFiles ? <div className={`preview-browser ${isCandidatePreview ? "candidate" : ""}`}><div className="browser-bar"><span className="browser-dots"><i /><i /><i /></span><div><Globe2 size={12} /> nucleus.preview/{slugify(project.title)}</div>{isCandidatePreview ? <b>{isProgressivePreview ? `渐进生成 · ${artifactFileCount}/3` : "候选工件 · 待 Ray 审查"}</b> : <Laptop size={14} />}</div><iframe key={previewKey} ref={iframeRef} title={`${project.title} 预览`} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} /></div> : <section className="empty-app-canvas"><span><Boxes size={24} /></span><p>VERSION 0 · NO GENERATED APP</p><h2>{busy ? "团队正在构建第一版应用" : project.status === "error" ? "上一轮没有形成可用版本" : project.intake ? "请在左侧选择产品方向" : "Iris 正在理解你的需求"}</h2><small>{busy ? `已持久化 ${artifactFileCount}/3 个代码文件；第一个页面工件写入后，这里会立即出现渐进预览。` : project.status === "error" ? "真实生成没有通过质量门；你可以重试工作流，已保存版本不会被覆盖。" : "选择一个方向后会立即开始真实多 Agent 构建，不需要再点第二次确认。这里不会展示与需求无关的预制 Demo。"}</small><div><b className={latestRun?.artifacts.some((item) => item.kind === "requirements") ? "done" : ""}>Iris 需求</b><b className={latestRun?.artifacts.some((item) => item.kind === "architecture") ? "done" : ""}>Bob 架构</b><b className={artifactFileCount === 3 ? "done" : ""}>Alex 代码 {artifactFileCount}/3</b><b className={latestRun?.artifacts.some((item) => item.kind === "quality") ? "done" : ""}>Ray 质量</b></div>{!busy && project.status === "error" && <button onClick={() => void runGenerate(project.prompt)}><WandSparkles size={15} />从头重试正式工作流</button>}</section>}
+            </div>
+            {busy && <LiveBuildMonitor currentAgent={currentAgent} elapsedSeconds={elapsedSeconds} liveStream={liveStream} timeline={displayTimeline} files={codeFiles} artifactFileCount={artifactFileCount} />}
+          </div>
           {selectedElement && <section className="visual-edit-panel">
             <header><div><MousePointer2 size={14} /><span>局部可视化修改</span></div><button onClick={() => setSelectedElement(null)} aria-label="关闭局部修改"><X size={13} /></button></header>
             <code>{selectedElement.selector}</code>
@@ -963,10 +1026,58 @@ function ConversationMessage({ message, pending, onCopy }: { message: ProjectMes
     </article>;
   }
   return <article className="conversation-message assistant">
-    <header><span className="agent-avatar small alex">A</span><div><strong>Alex</strong><small>工程师 · Nucleus 团队</small></div></header>
+    <header><span className="agent-avatar small iris">I</span><div><strong>Nucleus 团队</strong><small>产品 · 架构 · 工程 · 审查</small></div></header>
     <div className="assistant-bubble"><p>{message.content}</p></div>
     <footer><span>{timestamp}</span><button onClick={() => onCopy(message.content)} aria-label="复制智能体消息"><Copy size={12} /></button></footer>
   </article>;
+}
+
+function IntakeChoicePanel({ intake, loading, error, starting, onRetry, onSelect, onDirect }: {
+  intake: ProjectIntake | null;
+  loading: boolean;
+  error: string;
+  starting: string;
+  onRetry: () => void;
+  onSelect: (optionId: string) => void;
+  onDirect: () => void;
+}) {
+  if (loading && !intake) return <section className="intake-panel loading" aria-live="polite"><header><span className="agent-avatar small iris">I</span><div><strong>Iris 正在理解需求</strong><small>这一步只做产品澄清，还没有消耗代码生成额度</small></div><LoaderCircle className="spin" size={15} /></header><p>正在结合你的功能目标，整理三个可直接交给工程团队的方向…</p></section>;
+  if (error && !intake) return <section className="intake-panel error"><header><span className="agent-avatar small ray">!</span><div><strong>需求澄清暂时中断</strong><small>{error}</small></div></header><div className="intake-fallback"><button onClick={onRetry}><RefreshCcw size={13} />重试 Iris</button><button onClick={onDirect}>按原需求直接构建</button></div></section>;
+  if (!intake) return null;
+  return <section className="intake-panel ready" aria-label="Iris 产品方向选择">
+    <header><span className="agent-avatar small iris">I</span><div><strong>Iris · 产品建议</strong><small>{intake.source === "model" ? "由大模型实时分析" : "模型异常时由确定性规则恢复"}</small></div></header>
+    <p>{intake.question}</p>
+    <div className="intake-assumptions">{intake.assumptions.map((assumption) => <span key={assumption}><Check size={11} />{assumption}</span>)}</div>
+    <div className="intake-options">{intake.options.map((option) => <button key={option.id} className={option.recommended ? "recommended" : ""} disabled={Boolean(starting)} onClick={() => onSelect(option.id)}>
+      <span><strong>{option.label}</strong>{option.recommended && <b>推荐</b>}</span>
+      <small>{option.description}</small>
+      <em>{starting === option.id ? <><LoaderCircle className="spin" size={12} />正在启动真实构建…</> : <>选择并立即构建 <Sparkles size={11} /></>}</em>
+    </button>)}</div>
+    <footer>选择后将直接进入 Iris → Bob → Alex → Ray，不再要求二次点击“正式构建”。</footer>
+  </section>;
+}
+
+function LiveBuildMonitor({ currentAgent, elapsedSeconds, liveStream, timeline, files, artifactFileCount }: {
+  currentAgent: string;
+  elapsedSeconds: number;
+  liveStream: LiveStreamState | null;
+  timeline: TimelineItem[];
+  files: Partial<GeneratedFiles>;
+  artifactFileCount: number;
+}) {
+  const filePaths = ["index.html", "styles.css", "script.js"] as const;
+  const phasePath = filePaths.find((path) => liveStream?.phase.includes(path));
+  const latestPath = [...filePaths].reverse().find((path) => files[path]);
+  const visiblePath = phasePath ?? latestPath;
+  const persistedCode = visiblePath ? files[visiblePath] ?? "" : "";
+  const output = (liveStream?.text || persistedCode || "等待当前智能体返回第一个真实内容片段…").slice(-8_000);
+  const stageTitle = liveStream?.label ?? timeline.at(-1)?.title ?? "正在建立模型连接";
+  return <aside className="live-build-monitor" aria-live="polite">
+    <header><span className={`agent-avatar small ${agentTone[currentAgent] ?? "iris"}`}>{currentAgent.slice(0, 1)}</span><div><small>实时工作台</small><strong>{stageTitle}</strong></div><time>{elapsedSeconds}s</time></header>
+    <div className="live-build-files">{filePaths.map((path) => <span key={path} className={files[path] ? "done" : phasePath === path ? "active" : ""}>{files[path] ? <Check size={11} /> : phasePath === path ? <LoaderCircle className="spin" size={11} /> : <FileCode2 size={11} />}<b>{path}</b><small>{files[path] ? `${Math.max(1, Math.round(files[path]!.length / 1000))} KB` : phasePath === path ? "写入中" : "等待"}</small></span>)}</div>
+    <section className="live-code-window"><header><div><i /><i /><i /></div><span>{visiblePath ?? `${currentAgent.toLowerCase()}-output.json`}</span><b>{liveStream?.model || "cloud model"}</b></header><pre><code>{output}</code><i /></pre></section>
+    <footer><span><Activity size={12} />{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 字符实时接收` : `${artifactFileCount}/3 文件已持久化`}</span><b>{liveStream?.done ? "本阶段完成" : "执行中"}</b></footer>
+  </aside>;
 }
 
 function AgentActivityPanel({ busy, currentAgent, elapsedSeconds, timeline, liveStream, plan, quality, run }: {
@@ -994,7 +1105,7 @@ function AgentActivityPanel({ busy, currentAgent, elapsedSeconds, timeline, live
         {timeline.map((item) => <div className={`agent-step ${item.state}`} key={item.id}><span className={`agent-avatar small ${agentTone[item.agent] ?? "ray"}`}>{item.agent.slice(0, 1)}</span><div><header><strong>{item.agent} · {item.title}</strong><time>{item.time}</time></header><p>{item.detail}</p></div></div>)}
       </div>
     </details>
-    {busy && <div className="inline-stream"><header><span>{liveStream?.label ?? timeline.at(-1)?.title ?? "正在连接模型"}</span><b>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 字符` : "连接中"}</b></header><pre>{liveStream?.text || "等待模型返回第一个内容片段…"}<i /></pre></div>}
+    {busy && <div className="live-stage-strip"><span><Activity size={12} />{liveStream?.label ?? timeline.at(-1)?.title ?? "正在连接模型"}</span><b>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 字符` : "连接中"}</b><i /><i /><i /></div>}
     {plan && <details className="conversation-plan"><summary><span><WandSparkles size={13} /> 当前实现计划</span><ChevronDown size={13} /></summary><strong>{plan.summary}</strong><ul>{plan.features.slice(0, 4).map((feature) => <li key={feature}><Check size={11} />{feature}</li>)}</ul></details>}
     {run?.artifacts.length ? <details className="conversation-plan artifact-ledger"><summary><span><Boxes size={13} /> 持久化工件 {run.artifacts.length}</span><ChevronDown size={13} /></summary><ul>{run.artifacts.map((artifact) => <li key={artifact.id}><Check size={11} /><span><b>{artifact.agent}</b> · {artifact.kind}</span><small>{Math.max(1, Math.round(artifact.content.length / 1000))} KB</small></li>)}</ul></details> : null}
     {quality && !busy && <div className={`conversation-quality ${quality.passed ? "passed" : "failed"}`}><span><ShieldCheck size={14} /> Ray 质量门</span><strong>{quality.score}<small>/100 · {quality.grade} 级</small></strong></div>}
@@ -1017,10 +1128,6 @@ function runFiles(run: Project["runs"][number] | undefined): Partial<GeneratedFi
     if (content) files[path] = content;
   }
   return files;
-}
-function completeRunFiles(run: Project["runs"][number] | undefined): GeneratedFiles | null {
-  const files = runFiles(run);
-  return files["index.html"] && files["styles.css"] && files["script.js"] ? files as GeneratedFiles : null;
 }
 function formatDuration(value: number | null) { return value === null ? "—" : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`; }
 function platformStatLabel(key: string) { return ({ records: "数据记录", sessions: "活跃会话", errors: "错误证据", backups: "数据备份", runnerJobs: "Runner 任务", usageTokens: "模型 Tokens" } as Record<string, string>)[key] ?? key; }

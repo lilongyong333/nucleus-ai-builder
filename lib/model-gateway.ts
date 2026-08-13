@@ -60,8 +60,8 @@ export class ModelGatewayError extends Error {
 export function createModelBudget(options: { maxCalls: number; maxTotalTokens: number; maxDurationMs: number; now?: number }): ModelBudget {
   const now = options.now ?? Date.now();
   return {
-    maxCalls: clampInteger(options.maxCalls, 1, 40),
-    maxTotalTokens: clampInteger(options.maxTotalTokens, 1_000, 200_000),
+    maxCalls: clampInteger(options.maxCalls, 1, 80),
+    maxTotalTokens: clampInteger(options.maxTotalTokens, 1_000, 1_000_000),
     deadlineAt: now + clampInteger(options.maxDurationMs, 5_000, 290_000),
     calls: 0,
     usage: emptyUsage(),

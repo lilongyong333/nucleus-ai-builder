@@ -27,6 +27,7 @@ function project(versionNumber = 1, quality = firstQuality): Project {
     prompt: "制作一个面试计划板",
     status: "ready",
     plan: { appName: "面试计划板", summary: "安排准备任务", features: ["新增任务", "完成筛选"], design: "清晰响应式界面" },
+    intake: null,
     manifest: null,
     files: starterFiles,
     currentVersionId: versionId,
@@ -129,19 +130,25 @@ test("renders streamed agent review and the completed version", async ({ page })
   const activeProject = runningProject(initialProject, "run-update", "增加任务优先级");
   await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: initialProject } }));
   await page.route("**/api/runs", (route) => route.fulfill({ status: 201, json: { runId: "run-update", project: activeProject } }));
-  await page.route("**/api/runs/run-update/step", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/x-ndjson; charset=utf-8",
-    body: [
-      JSON.stringify({ type: "status", agent: "Iris", title: "需求分析完成", detail: "2 个可验证功能", state: "done" }),
-      JSON.stringify({ type: "review", report: finalQuality }),
-      JSON.stringify({ type: "complete", project: completedProject }),
-    ].join("\n") + "\n",
-  }));
+  await page.route("**/api/runs/run-update/step", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson; charset=utf-8",
+      body: [
+        JSON.stringify({ type: "status", agent: "Iris", title: "需求分析完成", detail: "2 个可验证功能", state: "done" }),
+        JSON.stringify({ type: "review", report: finalQuality }),
+        JSON.stringify({ type: "complete", project: completedProject }),
+      ].join("\n") + "\n",
+    });
+  });
 
   await page.goto("/w/e2e-project");
   await page.getByPlaceholder("告诉团队你想修改什么…").fill("增加任务优先级");
   await page.getByRole("button", { name: "发送修改需求" }).click();
+
+  await expect(page.locator(".live-build-monitor")).toBeVisible();
+  await expect(page.locator(".generation-stream-card")).toHaveCount(0);
 
   await expect(page.locator(".conversation-quality > strong")).toContainText("100");
   await page.locator(".run-audit-card summary").click();
@@ -257,18 +264,36 @@ test("queues a second message with Return while the current generation is runnin
   await expect(page.locator(".message-queue")).toHaveCount(0);
 });
 
-test("keeps a v0 draft honest and does not auto-spend a generation", async ({ page }) => {
+test("asks Iris for three directions and starts the real build with one selection", async ({ page }) => {
   const ready = project();
   const draft: Project = { ...ready, status: "draft", plan: null, currentVersionId: null, publishedVersionId: null, slug: null, versions: [], runs: [], messages: ready.messages.slice(0, 1) };
+  const intake = {
+    summary: "我已经把面试计划板整理成可执行方向。",
+    assumptions: ["所有核心按钮真实可用", "覆盖桌面与移动端"],
+    question: "你更希望第一版采用哪种产品方向？",
+    options: [
+      { id: "minimal", label: "极简实用", description: "聚焦任务流程", promptSuffix: "采用极简实用风格并实现完整 CRUD。", recommended: true },
+      { id: "dense", label: "专业信息密集", description: "成熟工作台", promptSuffix: "采用专业工作台风格。", recommended: false },
+      { id: "bold", label: "大胆表现力", description: "强化视觉反馈", promptSuffix: "采用大胆视觉并保留可访问性。", recommended: false },
+    ],
+    source: "model" as const,
+  };
+  const clarified: Project = { ...draft, intake, messages: [...draft.messages, { id: "iris-intake", projectId: draft.id, role: "assistant", content: `${intake.summary}\n\n${intake.question}`, createdAt: "2026-08-09T00:00:01.000Z" }] };
+  const running = runningProject(ready, "intake-run", "采用极简实用风格并实现完整 CRUD");
   let runPosts = 0;
   await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: draft } }));
-  await page.route("**/api/runs", (route) => { runPosts += 1; return route.fulfill({ status: 500, json: { error: "unexpected auto-run" } }); });
+  await page.route("**/api/projects/e2e-project/intake", (route) => route.fulfill({ json: { intake, project: clarified, recovered: false } }));
+  await page.route("**/api/runs", (route) => { runPosts += 1; return route.fulfill({ status: 201, json: { runId: "intake-run", project: running } }); });
+  await page.route("**/api/runs/intake-run/step", (route) => route.fulfill({ status: 200, contentType: "application/x-ndjson; charset=utf-8", body: `${JSON.stringify({ type: "complete", project: ready })}\n` }));
   await page.goto("/w/e2e-project");
   await expect(page.getByText("VERSION 0 · NO GENERATED APP")).toBeVisible();
-  await expect(page.getByText("这里不会再展示与需求无关的预制 Demo。", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Iris 产品方向选择")).toBeVisible();
+  await expect(page.locator(".intake-options > button")).toHaveCount(3);
   await expect(page.getByTitle("面试计划板 预览")).toHaveCount(0);
-  await page.waitForTimeout(500);
   expect(runPosts).toBe(0);
+  await page.getByRole("button", { name: /极简实用/ }).click();
+  await expect.poll(() => runPosts).toBe(1);
+  await expect(page.getByRole("button", { name: /版本 v1/ })).toBeVisible();
 });
 
 test("selects and previews a DOM element from a touch-sized mobile viewport", async ({ browser }) => {

@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { beginGeneration, consumeGenerationQuota, getProject, releaseGeneration } from "@/lib/db";
 import { resolveWorkspaceIdentity, withWorkspaceIdentity } from "@/lib/identity";
 import { activeModel } from "@/lib/opencode";
@@ -5,6 +6,12 @@ import { organizationHasTokenBudget, projectOrganizationRole } from "@/lib/organ
 import { resolveVisitorSession, withVisitorSession } from "@/lib/session";
 
 export const maxDuration = 15;
+
+function hourlyGenerationLimit(): number {
+  const raw = (env as unknown as Record<string, unknown>).NUCLEUS_GENERATIONS_PER_HOUR ?? process.env.NUCLEUS_GENERATIONS_PER_HOUR;
+  const parsed = Number(raw ?? 100);
+  return Math.max(1, Math.min(500, Number.isFinite(parsed) ? Math.floor(parsed) : 100));
+}
 
 export async function POST(request: Request) {
   const visitor = resolveVisitorSession(request);
@@ -24,7 +31,7 @@ export async function POST(request: Request) {
     const runId = await beginGeneration(projectId, identity.ownerId, prompt, activeModel(), mode);
     if (!runId) return withWorkspaceIdentity(Response.json({ error: "这个项目已有任务在执行，请等待或继续当前 Run" }, { status: 409 }), identity);
     const clientIdentifier = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip") ?? identity.ownerId;
-    if (!(await consumeGenerationQuota(clientIdentifier, 20))) {
+    if (!(await consumeGenerationQuota(clientIdentifier, hourlyGenerationLimit()))) {
       await releaseGeneration(projectId, identity.ownerId, runId, project.versions.length > 0 ? "ready" : "draft", "本小时生成配额已用完");
       return withWorkspaceIdentity(Response.json({ error: "本小时生成次数已达上限，请稍后再试" }, { status: 429, headers: { "Retry-After": "3600" } }), identity);
     }

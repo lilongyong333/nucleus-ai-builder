@@ -231,6 +231,7 @@ export function reviewGeneratedApp(files: GeneratedFiles): AppQualityReport {
 export function reviewProductContract(prompt: string, files: GeneratedFiles): AppQualityCheck[] {
   const request = prompt.toLowerCase();
   if (/(打字|打字速度|typing|type speed|wpm|cpm)/i.test(request)) return typingProductChecks(files);
+  if (/(财务|预算|支出|收入|记账|finance|budget|expense|income)/i.test(request)) return financeProductChecks(files);
   if (!/(贪吃蛇|snake)/i.test(request)) return [];
 
   const html = files["index.html"];
@@ -309,6 +310,15 @@ function typingProductChecks(files: GeneratedFiles): AppQualityCheck[] {
       blocking: true,
     }),
     makeCheck({
+      id: "typing-rate-safety",
+      label: "极速输入速率边界",
+      passed: hasSafeElapsedFloor(script),
+      passDetail: "速度计算将有效用时下限限制为至少 1 秒，瞬时粘贴或自动化输入不会产生无限/百万级速率",
+      failDetail: "速度计算没有把有效用时限制到至少 1 秒；瞬时输入可能得到 Infinity 或数百万 CPM/WPM",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
       id: "typing-random-content",
       label: "随机题库",
       passed: /Math\.random\s*\(|crypto\.getRandomValues\s*\(/.test(script) && /\[[\s\S]*["'`][\s\S]*["'`][\s\S]*\]/.test(script),
@@ -323,6 +333,58 @@ function typingProductChecks(files: GeneratedFiles): AppQualityCheck[] {
       passed: /(?:result|score|成绩|评级|完成)/i.test(source) && /(?:restart|reset|retry|again|再测|重试|重新)/i.test(source),
       passDetail: "检测到完成成绩和重新开始流程",
       failDetail: "缺少完成后的成绩展示或重新测试流程",
+      weight: 0,
+      blocking: true,
+    }),
+  ];
+}
+
+function hasSafeElapsedFloor(script: string): boolean {
+  const timeTerm = "(?:elapsed|duration|seconds|timeTaken|timeElapsed|用时|耗时)";
+  const floorFirst = new RegExp(`Math\\.max\\s*\\(\\s*(?:1(?:\\.0+)?|1000(?:\\.0+)?)\\s*,[\\s\\S]{0,220}${timeTerm}`, "i");
+  const floorSecond = new RegExp(`Math\\.max\\s*\\([\\s\\S]{0,220}${timeTerm}[\\s\\S]{0,100},\\s*(?:1(?:\\.0+)?|1000(?:\\.0+)?)\\s*\\)`, "i");
+  const guardedAssignment = new RegExp(`${timeTerm}[\\s\\S]{0,100}(?:<=?\\s*0|<\\s*1)[\\s\\S]{0,100}${timeTerm}[\\s\\S]{0,30}=\\s*1`, "i");
+  return floorFirst.test(script) || floorSecond.test(script) || guardedAssignment.test(script);
+}
+
+function financeProductChecks(files: GeneratedFiles): AppQualityCheck[] {
+  const html = files["index.html"];
+  const script = files["script.js"];
+  const source = `${html}\n${script}`;
+  return [
+    makeCheck({
+      id: "finance-real-entry",
+      label: "真实收支录入",
+      passed: /<(?:form|input|select)\b/i.test(html) && /(?:submit|click|change)\b/i.test(script) && /(?:amount|金额|expense|income|支出|收入)/i.test(source),
+      passDetail: "检测到金额/类型录入控件和真实提交处理",
+      failDetail: "缺少可提交的收支录入表单或事件处理，可能只是静态仪表盘",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "finance-live-aggregate",
+      label: "汇总联动",
+      passed: /(?:reduce\s*\(|forEach\s*\(|for\s*\()/i.test(script) && /(?:total|balance|summary|结余|合计|总收入|总支出)/i.test(source) && /(?:textContent|innerText)/i.test(script),
+      passDetail: "检测到基于交易记录重新计算并更新汇总指标",
+      failDetail: "新增交易后没有足够证据证明收入、支出或结余会重新计算",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "finance-empty-state",
+      label: "空状态切换",
+      passed: /(?:empty|空状态|暂无|no-transactions|noData)/i.test(source) && /(?:\.length|length\s*[=!<>])/.test(script) && /(?:hidden\s*=|classList\.(?:add|remove|toggle)|style\.display|setAttribute\s*\(\s*["']hidden)/i.test(script),
+      passDetail: "检测到交易为空/非空时显式显示或隐藏空状态",
+      failDetail: "空状态没有与交易数量联动，新增记录后仍可能显示“暂无数据”",
+      weight: 0,
+      blocking: true,
+    }),
+    makeCheck({
+      id: "finance-persistence",
+      label: "交易持久化",
+      passed: /(?:localStorage\.(?:setItem|getItem)|nucleus\.data\.(?:list|create|update|remove))/i.test(script),
+      passDetail: "检测到交易记录的读取与持久化路径",
+      failDetail: "刷新后交易可能全部丢失，缺少 localStorage 或平台数据 API",
       weight: 0,
       blocking: true,
     }),
@@ -365,6 +427,6 @@ function qualityCheckFile(checkId: string): keyof GeneratedFiles | "application"
   if (["javascript-syntax", "function-uniqueness", "runtime-safety"].includes(checkId)) return "script.js";
   if (["semantic-html", "viewport", "accessible-names", "self-contained"].includes(checkId)) return "index.html";
   if (["responsive-css", "keyboard-focus"].includes(checkId)) return "styles.css";
-  if (checkId.startsWith("snake-") || checkId.startsWith("typing-")) return "script.js";
+  if (checkId.startsWith("snake-") || checkId.startsWith("typing-") || checkId.startsWith("finance-")) return "script.js";
   return "application";
 }

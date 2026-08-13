@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { buildAppManifest, defaultRuntimeBlueprint } from "./app-manifest";
 import { databaseSchemaRevision } from "./database-schema";
 import { starterFiles } from "./runtime";
-import type { AgentName, AgentPlan, AppManifest, AppQualityReport, AppRuntimeBlueprint, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationEvent, GenerationRun, GenerationStage, ModelAttemptRecord, ModelUsage, Project, ProjectMessage, ProjectVersion, RaceCandidate } from "./types";
+import type { AgentName, AgentPlan, AppManifest, AppQualityReport, AppRuntimeBlueprint, GeneratedFiles, GenerationArtifact, GenerationArtifactKind, GenerationEvent, GenerationRun, GenerationStage, ModelAttemptRecord, ModelUsage, Project, ProjectIntake, ProjectMessage, ProjectVersion, RaceCandidate } from "./types";
 
 type D1Row = Record<string, string | number | null>;
 
@@ -22,7 +22,7 @@ let schemaReady: Promise<void> | null = null;
 async function prepareSchema(): Promise<void> {
   const d1 = db();
   await d1.batch([
-    d1.prepare(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, owner_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT, files_json TEXT NOT NULL, current_version_id TEXT, published_version_id TEXT, generation_id TEXT, generation_started_at TEXT, slug TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, owner_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT, intake_json TEXT, files_json TEXT NOT NULL, current_version_id TEXT, published_version_id TEXT, generation_id TEXT, generation_started_at TEXT, slug TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_number INTEGER NOT NULL, files_json TEXT NOT NULL, summary TEXT NOT NULL, model TEXT NOT NULL, quality_json TEXT, created_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS generation_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL)`),
@@ -37,7 +37,7 @@ async function prepareSchema(): Promise<void> {
     d1.prepare(`CREATE TABLE IF NOT EXISTS app_backups (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, label TEXT NOT NULL, snapshot_json TEXT NOT NULL, record_count INTEGER NOT NULL, created_by TEXT NOT NULL, archive_key TEXT, archive_status TEXT NOT NULL DEFAULT 'not-configured', archive_bytes INTEGER, archive_error TEXT, expires_at TEXT, created_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS runner_jobs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, provider TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS race_candidates (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id TEXT NOT NULL, stage TEXT NOT NULL, model TEXT NOT NULL, artifact TEXT NOT NULL, score INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 0, output_chars INTEGER NOT NULL, created_at TEXT NOT NULL)`),
-    d1.prepare(`CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'demo', monthly_token_limit INTEGER NOT NULL DEFAULT 2000000, approval_required INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'demo', monthly_token_limit INTEGER NOT NULL DEFAULT 10000000, approval_required INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS organization_members (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, subject_id TEXT NOT NULL, email TEXT, role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS project_approvals (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT NOT NULL, status TEXT NOT NULL, requested_by TEXT NOT NULL, reviewed_by TEXT, comment TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS usage_events (id TEXT PRIMARY KEY, organization_id TEXT, project_id TEXT NOT NULL, run_id TEXT, kind TEXT NOT NULL, quantity INTEGER NOT NULL, unit TEXT NOT NULL, model TEXT, created_at TEXT NOT NULL)`),
@@ -63,6 +63,7 @@ async function prepareSchema(): Promise<void> {
     ["published_version_id", `ALTER TABLE projects ADD COLUMN published_version_id TEXT`],
     ["generation_id", `ALTER TABLE projects ADD COLUMN generation_id TEXT`],
     ["generation_started_at", `ALTER TABLE projects ADD COLUMN generation_started_at TEXT`],
+    ["intake_json", `ALTER TABLE projects ADD COLUMN intake_json TEXT`],
   ] as const;
   for (const [name, statement] of additions) {
     if (columns.has(name)) continue;
@@ -224,7 +225,7 @@ async function ensurePersonalOrganization(ownerId: string): Promise<string> {
   const organizationId = existing?.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   if (!existing) {
-    await d1.prepare(`INSERT INTO organizations (id,owner_id,name,plan,monthly_token_limit,approval_required,created_at,updated_at) VALUES (?,?,?,'demo',2000000,0,?,?) ON CONFLICT(owner_id) DO UPDATE SET updated_at=excluded.updated_at`).bind(organizationId, ownerId, "个人工作区", now, now).run();
+    await d1.prepare(`INSERT INTO organizations (id,owner_id,name,plan,monthly_token_limit,approval_required,created_at,updated_at) VALUES (?,?,?,'demo',10000000,0,?,?) ON CONFLICT(owner_id) DO UPDATE SET updated_at=excluded.updated_at`).bind(organizationId, ownerId, "个人工作区", now, now).run();
   }
   const organization = await d1.prepare(`SELECT id FROM organizations WHERE owner_id=? LIMIT 1`).bind(ownerId).first<{ id: string }>();
   const resolvedId = organization?.id ?? organizationId;
@@ -396,6 +397,7 @@ async function projectFromRow(row: D1Row, includeAudit = true): Promise<Project>
     prompt: String(row.prompt),
     status: String(row.status) as Project["status"],
     plan,
+    intake: json<ProjectIntake | null>(row.intake_json, null),
     manifest,
     files: json<GeneratedFiles>(row.files_json, starterFiles),
     currentVersionId: row.current_version_id ? String(row.current_version_id) : null,
@@ -407,6 +409,20 @@ async function projectFromRow(row: D1Row, includeAudit = true): Promise<Project>
     runs,
     messages,
   };
+}
+
+export async function saveProjectIntake(id: string, ownerId: string, intake: ProjectIntake): Promise<Project | null> {
+  await ensureSchema();
+  const current = await db().prepare(`SELECT intake_json,status,current_version_id FROM projects WHERE id=? AND ${PROJECT_EDIT_ACCESS}`).bind(id, ownerId, ownerId).first<D1Row>();
+  if (!current || String(current.status) !== "draft" || current.current_version_id) return null;
+  if (current.intake_json) return getProject(id, ownerId);
+  const now = new Date().toISOString();
+  const assistantSummary = `${intake.summary}\n\n${intake.question}`;
+  await db().batch([
+    db().prepare(`UPDATE projects SET intake_json=?,updated_at=? WHERE id=? AND ${PROJECT_EDIT_ACCESS} AND status='draft' AND current_version_id IS NULL AND intake_json IS NULL`).bind(JSON.stringify(intake), now, id, ownerId, ownerId),
+    db().prepare(`INSERT INTO messages (id,project_id,role,content,created_at) SELECT ?,?,'assistant',?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND intake_json IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE project_id=? AND role='assistant')`).bind(crypto.randomUUID(), id, assistantSummary, now, id, id),
+  ]);
+  return getProject(id, ownerId);
 }
 
 export async function adoptVisitorProjects(visitorOwnerId: string, accountOwnerId: string): Promise<number> {
@@ -740,7 +756,7 @@ export async function getPublishedProject(slug: string): Promise<Project | null>
   return { ...project, files: publishedVersion.files, currentVersionId: publishedVersion.id };
 }
 
-export async function consumeGenerationQuota(identifier: string, limit = 8): Promise<boolean> {
+export async function consumeGenerationQuota(identifier: string, limit = 100): Promise<boolean> {
   await ensureSchema();
   const now = new Date();
   const bucket = now.toISOString().slice(0, 13);

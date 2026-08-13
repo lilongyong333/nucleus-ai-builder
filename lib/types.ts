@@ -474,12 +474,29 @@ export type ProjectVersion = {
   createdAt: string;
 };
 
+export type ProjectIntakeOption = {
+  id: string;
+  label: string;
+  description: string;
+  promptSuffix: string;
+  recommended: boolean;
+};
+
+export type ProjectIntake = {
+  summary: string;
+  assumptions: string[];
+  question: string;
+  options: ProjectIntakeOption[];
+  source: "model" | "deterministic-recovery";
+};
+
 export type Project = {
   id: string;
   title: string;
   prompt: string;
   status: "draft" | "generating" | "ready" | "error";
   plan: AgentPlan | null;
+  intake: ProjectIntake | null;
   manifest: AppManifest | null;
   files: GeneratedFiles;
   currentVersionId: string | null;

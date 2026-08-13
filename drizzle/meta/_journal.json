@@ -71,6 +71,13 @@
       "when": 1786540884614,
       "tag": "0009_harsh_bloodstorm",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786596049447,
+      "tag": "0010_real_gambit",
+      "breakpoints": true
     }
   ]
 }

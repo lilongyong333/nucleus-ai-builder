@@ -98,7 +98,7 @@ describe("generated app quality gate", () => {
       "index.html": '<main><textarea aria-label="输入"></textarea><button>完成</button></main>',
       "script.js": "document.querySelector('textarea').addEventListener('input', () => {});",
     });
-    expect(checks).toHaveLength(4);
+    expect(checks).toHaveLength(5);
     expect(checks.find((check) => check.id === "typing-live-metrics")?.severity).toBe("error");
     expect(checks.find((check) => check.id === "typing-random-content")?.severity).toBe("error");
   });
@@ -114,9 +114,36 @@ describe("generated app quality gate", () => {
         document.querySelector('textarea').addEventListener('compositionend', update);
         document.querySelector('textarea').addEventListener('input', update);
         document.querySelector('#restart').addEventListener('click', resetTest);
-        function update(event) { const elapsed = (Date.now() - startTime) / 60000; const accuracy = correct / Math.max(1, event.target.value.length); const wpm = correct / elapsed; document.querySelector('#wpm').textContent = String(wpm); document.querySelector('#accuracy').textContent = String(accuracy); }
+        function update(event) { const elapsed = Math.max(1, (Date.now() - startTime) / 1000); const accuracy = correct / Math.max(1, event.target.value.length); const wpm = correct / (elapsed / 60); document.querySelector('#wpm').textContent = String(wpm); document.querySelector('#accuracy').textContent = String(accuracy); }
         function resetTest() { startTime = Date.now(); document.querySelector('#result').textContent = '成绩'; }
       `,
+    });
+    expect(checks.every((check) => check.severity === "pass")).toBe(true);
+  });
+
+  it("blocks typing speeds that divide by a near-zero elapsed time", () => {
+    const checks = reviewProductContract("中文打字速度 CPM", {
+      "index.html": '<main><textarea></textarea><output>正确率 CPM</output><button>重新测试</button><section>成绩</section></main>',
+      "styles.css": "main{display:grid}",
+      "script.js": `const texts=['甲','乙']; let startTime=Date.now(), correct=1; const text=texts[Math.floor(Math.random()*texts.length)]; document.querySelector('textarea').addEventListener('input',()=>{const elapsed=(Date.now()-startTime)/60000; const cpm=correct/elapsed;}); function restart(){startTime=Date.now();}`,
+    });
+    expect(checks.find((check) => check.id === "typing-rate-safety")?.severity).toBe("error");
+  });
+
+  it("requires finance apps to hide stale empty states after adding data", () => {
+    const checks = reviewProductContract("个人财务预算和支出记录", {
+      "index.html": '<main><form><input name="amount"><select name="type"><option>支出</option></select><button>添加</button></form><p id="empty">暂无交易</p><output id="total">结余</output></main>',
+      "styles.css": "main{display:grid}",
+      "script.js": `const transactions=[]; document.querySelector('form').addEventListener('submit',()=>{ transactions.push({amount:1,type:'expense'}); const total=transactions.reduce((sum,item)=>sum+item.amount,0); document.querySelector('#total').textContent=String(total); localStorage.setItem('transactions',JSON.stringify(transactions)); }); localStorage.getItem('transactions');`,
+    });
+    expect(checks.find((check) => check.id === "finance-empty-state")?.severity).toBe("error");
+  });
+
+  it("accepts a finance CRUD loop with aggregate, persistence and explicit empty-state switching", () => {
+    const checks = reviewProductContract("finance budget expense tracker", {
+      "index.html": '<main><form><input name="amount"><select name="type"><option>expense</option></select><button>Add</button></form><p id="empty">No transactions</p><output id="balance">Total balance</output></main>',
+      "styles.css": "main{display:grid}",
+      "script.js": `let transactions=JSON.parse(localStorage.getItem('transactions')||'[]'); function render(){ const total=transactions.reduce((sum,item)=>sum+item.amount,0); document.querySelector('#balance').textContent=String(total); document.querySelector('#empty').hidden=transactions.length!==0; } document.querySelector('form').addEventListener('submit',()=>{ transactions.push({amount:1,type:'expense'}); localStorage.setItem('transactions',JSON.stringify(transactions)); render(); }); render();`,
     });
     expect(checks.every((check) => check.severity === "pass")).toBe(true);
   });
