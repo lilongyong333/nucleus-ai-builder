@@ -30,8 +30,8 @@ OPENCODE_GO_MODEL=gpt-5.6-luna
 OPENCODE_GO_FALLBACK_MODEL=glm-5.2
 OPENCODE_GO_CODE_MODEL=glm-5.2
 OPENCODE_GO_CODE_FALLBACK_MODEL=gpt-5.6-luna
-OPENCODE_GO_MAX_MODEL_CALLS=24
-OPENCODE_GO_MAX_TOTAL_TOKENS=180000
+OPENCODE_GO_MAX_MODEL_CALLS=60
+OPENCODE_GO_MAX_TOTAL_TOKENS=500000
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -87,10 +87,10 @@ git diff --check
 
 | 检查 | 结果 |
 |---|---:|
-| Vitest | 351/351 |
+| Vitest | 363/363 |
 | 产品与安全固定 Eval | 283/283 |
 | 专项安全 | 17/17 |
-| Chromium E2E | 9/9 |
+| Chromium E2E | 11/11 |
 | TypeScript | 通过 |
 | ESLint | 通过 |
 | Drizzle / Vinext production build | 通过 |

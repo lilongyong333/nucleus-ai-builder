@@ -441,3 +441,50 @@ Production      passed
 - `git diff --check`：通过；
 - Chromium E2E：9/9；
 - Vinext production build：通过。
+
+## 第十六轮：引导式需求、实时构建、超时终态与严格沙箱持久化
+
+日期：2026-08-13。
+
+### 用户流程与实时反馈
+
+- 新增项目级 `intake_json` 和 migration `0010`；首页卡片或自定义需求进入工作台后，Iris 真实生成恰好三个产品方向，其中一个推荐；
+- 用户选择方向后，系统把方向详情扩展进正式 Prompt 并自动创建 Run，不再要求点击第二个“开始正式构建”；
+- 右侧重复黑色输出框替换为 `LiveBuildMonitor`：实时展示 Agent、阶段、用时、三文件状态、真实代码尾部、模型和累计字符；
+- 左侧对话增加字号与可读信息，保留 Agent 步骤、Artifact、Ray 质量门和完整审计；失败原因新增直接可见的 `role="alert"` 卡片，不再只藏在折叠审计；
+- 候选预览按 1/3、2/3、3/3 文件渐进更新；没有 Ray 通过时仍为 v0/候选，不会用旧 Demo 冒充成功。
+
+### 真实延迟与终态修复
+
+- 生产财务应用生成确认 GLM 代码首个可见 Token 可能超过 75 秒，旧首片超时会过早切断；
+- 生产环境和默认配置调整为代码首片 140 秒、单请求 175 秒、备用预留 70 秒；Run 上限 60 Calls/500K Tokens，单阶段 4 Calls/100K Tokens/280 秒；
+- 阶段路由 deadline 调整为 285 秒；即使 AbortSignal 已触发，也必须写失败/终止事件、输出终态并关闭响应，不再让页面永久停在“连接中”；
+- 财务 CRUD 人工新增 `¥88.66` 后统计与明细正确，但发现 CSS 强制 `display:flex` 覆盖 `[hidden]`；新增 `finance-hidden-visibility` 阻断门，后续同类错误不能进入 Version。
+
+### 严格 iframe 数据持久化
+
+- 看板真实生成和流转通过，但刷新丢失任务，确认根因是严格 iframe 不含 `allow-same-origin`，原生 `localStorage` 不可用，旧 shim 仅存内存；
+- 拒绝通过增加 `allow-same-origin` 换取方便，因为它与 `allow-scripts` 组合会扩大生成代码访问宿主的风险；
+- 新增 `lib/preview-storage.ts` 和 runtime 宿主桥：只接受当前 iframe 的 `nucleus-preview/storage` 消息，按项目隔离并限制 200 keys、256 字符 key、50K 单值、1M 总量；
+- 工作台刷新会用宿主可信快照重建 opaque iframe 存储；公开页与工作台使用同一 projectId 数据空间；跨设备共享仍使用每应用 API/Schema/Auth，不混淆为云数据库；
+- 新增 Playwright 回归：生成应用写 `localStorage` 后点击工作台刷新，值仍存在，且 iframe sandbox 仍不含 `allow-same-origin`。
+
+### 四类生产真实生成与点击验收
+
+- 中文打字：Iris 三选一后自动构建；首次 HTML 因三文件职责污染被拒，重试 v1、Ray 100/A；实际键盘输入更新到 `10/40`，正确率变化，粘贴阻止和重新开始归零通过；
+- 极简番茄钟：第一轮失败保留，重试 v1、Ray 100/A；实际新增任务、启动、暂停、继续、结束确认、标记完成，今日完成 `0→1`；
+- 轻量看板：第一轮未过门，重试 v1、确定性 Ray 100/A；新建任务后计数 `1/0/0→0/1/0→0/0/1`；刷新丢失问题推动上述持久化修复；
+- 贪吃蛇：v1、Ray 100/A；开始、暂停、继续、重开、键盘方向、吃食得分 10、撞墙结束、移动端触控和最高分保持通过；
+- 以上均为新建生产项目和真实模型 Run，没有使用预制 Demo；首次失败、协议拒绝、模型审查不可用和重试记录均保留。
+
+### 第十六轮本地发布门
+
+- Vitest：18 文件，363/363；
+- 固定产品与安全 Eval：3 文件，283/283；
+- 专项安全：17/17；
+- Chromium Playwright：11/11；
+- TypeScript：通过；
+- ESLint：通过；
+- Vinext production build：通过；
+- `git diff --check`：通过；
+- 完整教学新增：`docs/learning/21-guided-intake-live-cockpit-and-production-eval.md`。

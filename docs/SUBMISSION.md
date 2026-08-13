@@ -3,7 +3,7 @@
 > 候选人：李龙勇
 > 项目名称：Nucleus
 > 项目定位：可恢复、可审计的多 Agent 网页应用生成平台
-> 最终功能代码基线：`agent/metagpt-quality-gate` 分支最新提交（2026-08-12 商业化加固版）
+> 最终功能代码基线：`agent/metagpt-quality-gate` 分支最新提交（2026-08-13 引导式需求、实时构建、生成可靠性与沙箱持久化版）
 
 ## 0. 笔试结果回收信息
 
@@ -25,7 +25,7 @@
 
 ## 1. 项目概述
 
-Nucleus 是一个面向非技术用户的 AI 应用生成器。用户输入一句自然语言需求后，Iris、Bob、Alex、Ray 四个 Agent 会依次完成需求分析、架构设计、代码生成和质量审查，最终交付一个可点击、可继续修改、可保存版本并可公开分享的网页应用。
+Nucleus 是一个面向非技术用户的 AI 应用生成器。用户输入一句自然语言需求后，Iris 会先给出三个可选择方向；选择后，Iris、Bob、Alex、Ray 四个 Agent 会依次完成需求分析、架构设计、代码生成和质量审查，最终交付一个可点击、可继续修改、可保存版本并可公开分享的网页应用。
 
 我对题目的理解不是“做一个会返回代码的聊天框”，而是完成一条可验证的产品闭环：
 
@@ -104,14 +104,16 @@ Cloudflare Worker
 ### 4.1 用户可直接体验的核心功能
 
 - 游客无需注册即可创建项目；登录后项目、版本和对话可以跨设备保存；
+- Iris 先返回三个真实模型生成的产品方向；选择后自动进入正式构建，不需要第二次点击；
 - 自然语言生成 HTML/CSS/JavaScript 三文件应用；
-- 真实流式 Agent 进度、阶段状态、模型尝试、耗时和 Token 审计；
+- 右侧实时代码工作台展示当前 Agent、三文件写入、代码尾部、累计字符和耗时；左侧展示对话、工件、失败原因和审计；
 - 可交互实时预览、源码查看、桌面/移动视口切换；
 - 基于当前版本继续对话修改；生成期间可将下一条消息加入队列；
 - 项目和完整版本快照持久化，支持历史版本恢复；
 - 固定版本公开发布，后续草稿不会悄悄改变已分享的成品；
 - ZIP 源码下载；
 - 启动错误、Console error 和 Promise rejection 回传工作台；
+- 严格 opaque iframe 中的生成应用通过有配额的宿主桥保存本地状态，刷新预览不丢任务；
 - 失败状态、v0 空状态和 Provider 未配置状态均明确展示，不用固定 Demo 冒充新结果。
 
 ### 4.2 工程可靠性能力
@@ -155,6 +157,10 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 - Stripe 同步 Subscription、Invoice 和组织真实权益，取消/暂停/未支付会降级；
 - Runner 回调同时校验 Bearer、五分钟 HMAC 和 Job 状态，防 Body 篡改与重放；
 - 手机触屏可以选中 iframe DOM，在底部编辑器修改文字、尺寸、间距、Display 和 Grid。
+
+### 5.7 引导式生成与严格沙箱存储桥
+
+首页不再把用户直接扔到一个需要二次点击的空工作台。Iris 先生成三个可解释方向，用户选择后自动构建；右侧显示真实三文件和代码流，而不是重复左侧“生成中”。预览仍不授予 `allow-same-origin`，生成应用的本地状态通过来源校验、按项目隔离且有 200 key/1 MB 配额的消息桥保存。这个方案同时解决了交互正反馈、刷新丢数据和沙箱安全三件事。
 
 ## 6. 关键工程取舍
 
@@ -210,12 +216,12 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 
 ## 9. 验证结果
 
-2026-08-12 商业化加固版的实际验收结果：
+2026-08-13 最终可靠性与交互版的实际验收结果：
 
-- Vitest 单元/集成/固定契约：**17 个文件，351/351**；
+- Vitest 单元/集成/固定契约：**18 个文件，363/363**；
 - 固定产品与安全 Eval：**3 个文件，283/283**；
 - 专项安全策略测试：**17/17**；
-- Chromium Playwright 真实浏览器 E2E：**9/9**；
+- Chromium Playwright 真实浏览器 E2E：**11/11**；
 - TypeScript：通过；
 - ESLint：通过；
 - Drizzle Schema/Migration：成功生成并检查 `0009_harsh_bloodstorm.sql`；
@@ -223,7 +229,7 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 - 只读并发压测：**1,000 请求、40 并发、0 失败、P95 2162.62ms**；
 - Git diff、常见密钥格式和原始笔试 PDF 提交检查：在最终推送前再次执行。
 
-9 条 E2E 中包含一条不 Mock API 的真实本地 D1 控制面草稿创建/刷新恢复，以及一条 390×844 Touch Context 的 DOM 选择与局部修改。固定 Eval 验证的是确定性产品与安全契约，不等价于“任意需求生成成功率 100%”；压测结果也只是本机开发 Worker 基线，不是生产 SLA。
+11 条 E2E 中包含一条不 Mock API 的真实本地 D1 控制面草稿创建/刷新恢复、一条 390×844 Touch Context 的 DOM 选择与局部修改、一条严格 opaque iframe 下的生成应用数据刷新恢复，以及一条失败 Run 原因直接可见性回归。固定 Eval 验证的是确定性产品与安全契约，不等价于“任意需求生成成功率 100%”；压测结果也只是本机开发 Worker 基线，不是生产 SLA。
 
 生产故障复盘还验证了一个关键边界：失败 Run 只使用 15,060/180,000 Tokens，根因包括 GPT/GLM 端点协议错配、Bob JSON 工件协议和 SSE 终止事件，而不是 Token 不够。当前版本会让 GPT 使用 Responses API、GLM 使用 Chat Completions，能结构化救回完整工件，并让 Iris/Bob/Ray 在可恢复 Provider 故障时生成显式审计的保守工件；详细见 `docs/learning/20-why-unlimited-tokens-do-not-fix-generation.md`。
 
@@ -233,7 +239,7 @@ Race Mode 可以让多个代码模型并行生成候选，通过确定性指标�
 - **OpenCode Go 模型 API：** 作为 Nucleus 产品内部 Iris/Bob/Alex/Ray 的真实模型来源；
 - **人工判断：** 决定产品范围、失败是否可以接受、功能优先级、工程边界和最终交付标准。
 
-项目保留了失败 Run、模型尝试、生产故障和逐轮修复证据。完整教学和复现材料位于 `docs/learning/`；本轮 Provisioner、GitHub App、Stripe、Outbox、Runner、安全和压测细节见 `docs/learning/19-commercial-hardening-and-provider-runbook.md`；逐轮验收记录位于 `docs/PROGRESS.md`。
+项目保留了失败 Run、模型尝试、生产故障和逐轮修复证据。完整教学和复现材料位于 `docs/learning/`；Provisioner、GitHub App、Stripe、Outbox、Runner、安全和压测细节见 `docs/learning/19-commercial-hardening-and-provider-runbook.md`；最新的引导式需求、实时代码工作台、沙箱持久化和四类真实生产生成验收见 `docs/learning/21-guided-intake-live-cockpit-and-production-eval.md`；逐轮验收记录位于 `docs/PROGRESS.md`。
 
 ## 11. 建议演示顺序（3 分钟）
 

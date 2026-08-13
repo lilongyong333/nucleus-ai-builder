@@ -101,7 +101,7 @@ pnpm exec drizzle-kit check
 pnpm build
 ```
 
-2026-08-12 当前发布门结果：Vitest 351/351、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9；TypeScript、ESLint、Migration 生成和 Vinext production build 通过。模型网关会按 OpenCode Go 模型选择 Responses API 或 Chat Completions，并统一审计流式状态与 Token 用量。只读压测实际运行 1,000 请求/40 并发，0 失败、P95 2162.62ms。该数据是本机开发 Worker 基线，不应外推为生产容量承诺。
+2026-08-13 当前发布门结果：Vitest 363/363、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 11/11；TypeScript、ESLint、Migration 生成和 Vinext production build 通过。模型网关会按 OpenCode Go 模型选择 Responses API 或 Chat Completions，并统一审计流式状态与 Token 用量。生成应用在严格 opaque iframe 沙箱中通过有配额的宿主桥持久化 `localStorage`，刷新不再丢任务数据。只读压测实际运行 1,000 请求/40 并发，0 失败、P95 2162.62ms。该数据是本机开发 Worker 基线，不应外推为生产容量承诺。
 
 浏览器 E2E 覆盖：项目创建、工作台、流式 Agent 结果、断线恢复、消息队列、账号项目库、v0 真实性、触屏 DOM 编辑，以及一条不 Mock API 的本地 D1 草稿创建/刷新恢复。真实付费模型生成和外部 Provider 验收需在配置相应密钥的 staging/生产环境单独执行。
 
@@ -133,6 +133,7 @@ Cloudflare Worker 本身不会执行模型生成的 shell 命令或任意 Docker
 - [完整文档中心](docs/README.md)
 - [从零到上线：完整教学手册](docs/learning/README.md)
 - [商业化加固与 Provider 落地 Runbook](docs/learning/19-commercial-hardening-and-provider-runbook.md)
+- [引导式需求、实时代码工作台、严格沙箱持久化与真实生产 Eval](docs/learning/21-guided-intake-live-cockpit-and-production-eval.md)
 - [架构与取舍](docs/DESIGN.md)
 - [企业级开发、GitHub、部署与排障教学](docs/ENGINEERING-HANDBOOK.md)
 - [www.llynb.cc 自定义域名与长期托管](docs/CUSTOM-DOMAIN-DEPLOYMENT.md)

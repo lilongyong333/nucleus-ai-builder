@@ -158,6 +158,21 @@ test("renders streamed agent review and the completed version", async ({ page })
   await expect(page.getByText("Ray 100/100")).toBeVisible();
 });
 
+test("shows the real failed-run reason instead of hiding it in the audit drawer", async ({ page }) => {
+  const failedProject = project();
+  failedProject.status = "error";
+  failedProject.runs[0].status = "failed";
+  failedProject.runs[0].error = "模型响应超时，未形成可用版本";
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: failedProject } }));
+
+  await page.goto("/w/e2e-project");
+
+  const failure = page.getByRole("alert");
+  await expect(failure).toContainText("本轮没有通过质量门");
+  await expect(failure).toContainText("模型响应超时，未形成可用版本");
+  await expect(failure).toContainText("不会切换成预制 Demo");
+});
+
 test("shows a signed-in account project library with detailed links", async ({ page }) => {
   await page.setExtraHTTPHeaders({
     "oai-authenticated-user-id": "e2e-account",
@@ -319,6 +334,27 @@ test("selects and previews a DOM element from a touch-sized mobile viewport", as
   await panel.getByRole("button", { name: "预览修改" }).click();
   await expect(page.getByText("局部样式已在预览中应用", { exact: false })).toBeVisible();
   await context.close();
+});
+
+test("persists generated localStorage through the strict opaque iframe sandbox", async ({ page }) => {
+  const files = {
+    "index.html": '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Storage test</title></head><body><main><label>Value <input id="value"></label><button id="save">Save</button><output id="result"></output></main></body></html>',
+    "styles.css": 'body{font-family:system-ui}button:focus-visible,input:focus-visible{outline:2px solid blue}@media(max-width:600px){main{display:grid}}',
+    "script.js": 'const input=document.querySelector("#value"),output=document.querySelector("#result");output.textContent=localStorage.getItem("storage-test")||"empty";document.querySelector("#save").addEventListener("click",()=>{localStorage.setItem("storage-test",input.value);output.textContent=input.value});',
+  };
+  const storedProject = project();
+  storedProject.title = "Storage bridge";
+  storedProject.files = files;
+  storedProject.versions[0].files = files;
+  await page.route("**/api/projects/e2e-project", (route) => route.fulfill({ json: { project: storedProject } }));
+  await page.goto("/w/e2e-project");
+  const frame = page.frameLocator("iframe");
+  await frame.getByLabel("Value").fill("persisted across refresh");
+  await frame.getByRole("button", { name: "Save" }).click();
+  await expect(frame.getByText("persisted across refresh")).toBeVisible();
+  await page.waitForTimeout(100);
+  await page.getByRole("button", { name: "刷新" }).click();
+  await expect(frame.getByText("persisted across refresh")).toBeVisible();
 });
 
 test("creates and reopens a real local D1-backed draft without API mocks", async ({ page }) => {

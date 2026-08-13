@@ -1,11 +1,38 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { applyPreviewStorageMutation, parsePreviewStorage } from "@/lib/preview-storage";
 import { composePreview } from "@/lib/runtime";
 import type { AppRuntimeSession, GeneratedFiles } from "@/lib/types";
 
-export function PublishedPreview({ files, title, slug, versionId }: { files: GeneratedFiles; title: string; slug: string; versionId: string | null }) {
+export function PublishedPreview({ files, title, slug, projectId, versionId }: { files: GeneratedFiles; title: string; slug: string; projectId: string; versionId: string | null }) {
   const [session, setSession] = useState<AppRuntimeSession | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const bridgeStorageKey = `nucleus:preview-storage:${projectId}`;
+  const [bridgeStorage, setBridgeStorage] = useState<Record<string, string>>({});
+  const storageRef = useRef<Record<string, string>>(bridgeStorage);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let stored: Record<string, string> = {};
+      try { stored = parsePreviewStorage(window.localStorage.getItem(bridgeStorageKey)); } catch { /* storage disabled */ }
+      storageRef.current = stored;
+      setBridgeStorage(stored);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [bridgeStorageKey]);
+
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow || event.data?.source !== "nucleus-preview" || event.data?.type !== "storage") return;
+      const next = applyPreviewStorageMutation(storageRef.current, event.data);
+      if (next === storageRef.current) return;
+      storageRef.current = next;
+      try { window.localStorage.setItem(bridgeStorageKey, JSON.stringify(next)); } catch { /* storage quota or privacy mode */ }
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [bridgeStorageKey]);
 
   useEffect(() => {
     const storageKey = `nucleus:app:${slug}:refresh`;
@@ -29,7 +56,8 @@ export function PublishedPreview({ files, title, slug, versionId }: { files: Gen
     actor: session.actor,
     manifest: session.manifest,
     source: "published",
-  } : { versionId, source: "published" }), [files, session, versionId]);
+    storage: bridgeStorage,
+  } : { versionId, source: "published", storage: bridgeStorage }), [bridgeStorage, files, session, versionId]);
 
-  return <iframe className="published-frame" title={title} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} />;
+  return <iframe ref={iframeRef} className="published-frame" title={title} sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={srcDoc} />;
 }

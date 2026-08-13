@@ -1,6 +1,6 @@
 # Nucleus 文档中心
 
-> 当前代码基线：`agent/metagpt-quality-gate` 分支 2026-08-12 生成可靠性与商业化加固版。发布门为 Vitest 351/351、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 9/9，并完成 1,000 请求/40 并发基线。代码、Sites 部署和外部 Provider 账号是否已配置是三个不同状态，文档分别标注。
+> 当前代码基线：`agent/metagpt-quality-gate` 分支 2026-08-13 引导式需求、实时构建、生成可靠性与严格沙箱持久化版。发布门为 Vitest 363/363、产品/安全 Eval 283/283、专项安全 17/17、Chromium E2E 11/11，并完成 1,000 请求/40 并发基线。代码、Sites 部署和外部 Provider 账号是否已配置是三个不同状态，文档分别标注。
 
 ## 想从零照着做
 
@@ -25,7 +25,8 @@
 17. [团队协作与生产运维](learning/16-team-operations-observability.md)；
 18. [P2/P3 部署与验收](learning/17-p2-p3-deployment-acceptance.md)；
 19. [Python 手撕多 Agent](learning/18-python-multi-agent-from-scratch.md)；
-20. [商业化加固与 Provider 落地](learning/19-commercial-hardening-and-provider-runbook.md)。
+20. [商业化加固与 Provider 落地](learning/19-commercial-hardening-and-provider-runbook.md)；
+21. [引导式需求、实时构建工作台与生产 Eval](learning/21-guided-intake-live-cockpit-and-production-eval.md)。
 
 ## 想快速理解最终方案
 

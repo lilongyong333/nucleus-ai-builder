@@ -40,6 +40,7 @@ export type PreviewRuntimeOptions = {
   actor?: AppRuntimeActor | null;
   manifest?: AppManifest | null;
   source?: "preview" | "published";
+  storage?: Record<string, string>;
 };
 
 export function composePreview(files: GeneratedFiles, options: PreviewRuntimeOptions = {}): string {
@@ -54,10 +55,11 @@ export function composePreview(files: GeneratedFiles, options: PreviewRuntimeOpt
     manifest: options.manifest ?? null,
     source: options.source ?? "preview",
     basePath: options.projectId ? `/api/app-runtime/${options.projectId}` : null,
+    storage: options.storage ?? {},
   }).replace(/<\//g, "<\\/");
   const runtime = `<script>(function(){
 var config=${config};
-try{var probe='__nucleus_probe__';localStorage.setItem(probe,'1');localStorage.removeItem(probe)}catch(e){var memory={};Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:function(k){return Object.prototype.hasOwnProperty.call(memory,k)?memory[k]:null},setItem:function(k,v){memory[k]=String(v)},removeItem:function(k){delete memory[k]},clear:function(){memory={}},key:function(i){return Object.keys(memory)[i]||null},get length(){return Object.keys(memory).length}}})}
+try{var probe='__nucleus_probe__';localStorage.setItem(probe,'1');localStorage.removeItem(probe)}catch(e){var memory={};function invalidStorageKey(k){return !k||k.length>256||k==='__proto__'||k==='prototype'||k==='constructor'}Object.keys(config.storage||{}).slice(0,200).forEach(function(k){if(!invalidStorageKey(k))memory[k]=String(config.storage[k])});function storageMessage(action,key,value){parent.postMessage({source:'nucleus-preview',type:'storage',action:action,key:key,value:value},'*')}function storageSize(value){return Object.keys(value).reduce(function(sum,key){return sum+key.length+value[key].length},0)}function quotaError(){throw new DOMException('Preview storage quota exceeded','QuotaExceededError')}Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:function(k){return Object.prototype.hasOwnProperty.call(memory,k)?memory[k]:null},setItem:function(k,v){k=String(k);v=String(v);if(invalidStorageKey(k)||v.length>50000||(!Object.prototype.hasOwnProperty.call(memory,k)&&Object.keys(memory).length>=200))quotaError();var next=Object.assign({},memory);next[k]=v;if(storageSize(next)>1000000)quotaError();memory=next;storageMessage('set',k,v)},removeItem:function(k){k=String(k);if(invalidStorageKey(k))return;delete memory[k];storageMessage('remove',k)},clear:function(){memory={};storageMessage('clear')},key:function(i){return Object.keys(memory)[i]||null},get length(){return Object.keys(memory).length}}})}
 window.__nucleusRuntimeFailed=false;
 var eventQueue=[];var eventTimer=null;var emitted=0;
 function printable(value){if(typeof value==='string')return value;try{return JSON.stringify(value)}catch(e){return String(value)}}

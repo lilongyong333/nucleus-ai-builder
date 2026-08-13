@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowLeft, Bot, Boxes, Check, ChevronDown, CircleAlert, Clock3, Code2, Copy, Database, Download, ExternalLink, FileCode2, FlaskConical, Globe2, HardDrive, History, Laptop, ListChecks, LoaderCircle, Maximize2, MessageSquareText, Mic, MicOff, Monitor, MousePointer2, PanelLeftClose, Play, Plus, RefreshCcw, RotateCcw, Send, ServerCog, Share2, ShieldCheck, Smartphone, Sparkles, Square, SquareTerminal, Trash2, UserRound, WandSparkles, X } from "lucide-react";
+import { applyPreviewStorageMutation, parsePreviewStorage } from "@/lib/preview-storage";
 import { composePreview } from "@/lib/runtime";
 import type { AgentEvent, AgentPlan, AppBackup, AppDatabaseResource, AppManifest, AppQualityReport, AppRuntimeSession, BillingAccount, BillingInvoice, GeneratedFiles, GenerationArtifactKind, GitHubAppInstallation, GitIntegration, NotificationDelivery, OperationalSummary, Organization, Project, ProjectApproval, ProjectIntake, ProjectMessage, ProvisioningEvent, RunnerJob, RuntimeEvidence } from "@/lib/types";
 
@@ -69,6 +70,9 @@ export function Workbench({ projectId }: { projectId: string }) {
   const autoRepairVersionsRef = useRef(new Set<string>());
   const autoProvisionedVersionsRef = useRef(new Set<string>());
   const intakeRequestedRef = useRef(false);
+  const previewStorageKey = `nucleus:preview-storage:${projectId}`;
+  const [previewStorage, setPreviewStorage] = useState<Record<string, string>>({});
+  const previewStorageRef = useRef<Record<string, string>>(previewStorage);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -392,6 +396,16 @@ export function Workbench({ projectId }: { projectId: string }) {
   }, []);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let stored: Record<string, string> = {};
+      try { stored = parsePreviewStorage(window.localStorage.getItem(previewStorageKey)); } catch { /* storage disabled */ }
+      previewStorageRef.current = stored;
+      setPreviewStorage(stored);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [previewStorageKey]);
+
+  useEffect(() => {
     fetch(`/api/projects/${projectId}`).then(async (response) => {
       const data = await response.json() as { error?: string; project: Project };
       if (!response.ok) throw new Error(data.error || "项目不存在");
@@ -487,6 +501,13 @@ export function Workbench({ projectId }: { projectId: string }) {
         const level = (["log", "info", "warn", "error"].includes(event.data.level) ? event.data.level : "log") as ConsoleEntry["level"];
         setConsoleEntries((entries) => [...entries.slice(-99), { id: crypto.randomUUID(), level, message: String(event.data.message || ""), time: nowTime(true) }]);
       }
+      if (event.data.type === "storage") {
+        const next = applyPreviewStorageMutation(previewStorageRef.current, event.data);
+        if (next !== previewStorageRef.current) {
+          previewStorageRef.current = next;
+          try { window.localStorage.setItem(previewStorageKey, JSON.stringify(next)); } catch { /* storage quota or privacy mode */ }
+        }
+      }
       if (event.data.type === "ready") {
         setPreviewState("passed");
         setConsoleEntries((entries) => [...entries.slice(-99), { id: crypto.randomUUID(), level: "info", message: "应用启动完成，未发现阻塞错误", time: nowTime(true) }]);
@@ -512,7 +533,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [project?.currentVersionId]);
+  }, [previewStorageKey, project?.currentVersionId]);
 
   useEffect(() => {
     if (!notice) return;
@@ -581,11 +602,13 @@ export function Workbench({ projectId }: { projectId: string }) {
     actor: runtimeSession.actor,
     manifest: runtimeSession.manifest,
     source: "preview",
-  } : { projectId, versionId: project?.currentVersionId ?? null, manifest: project?.manifest ?? null, source: "preview" }) : "", [previewFiles, project?.currentVersionId, project?.manifest, projectId, runtimeSession]);
+    storage: previewStorage,
+  } : { projectId, versionId: project?.currentVersionId ?? null, manifest: project?.manifest ?? null, source: "preview", storage: previewStorage }) : "", [previewFiles, previewStorage, project?.currentVersionId, project?.manifest, projectId, runtimeSession]);
 
   function reloadPreview() {
     setPreviewError("");
     setPreviewState("checking");
+    setPreviewStorage({ ...previewStorageRef.current });
     setConsoleEntries([{ id: crypto.randomUUID(), level: "info", message: "正在重新加载应用…", time: nowTime(true) }]);
     setPreviewKey((value) => value + 1);
   }
@@ -1108,6 +1131,7 @@ function AgentActivityPanel({ busy, currentAgent, elapsedSeconds, timeline, live
     {busy && <div className="live-stage-strip"><span><Activity size={12} />{liveStream?.label ?? timeline.at(-1)?.title ?? "正在连接模型"}</span><b>{liveStream?.totalChars ? `${liveStream.totalChars.toLocaleString("zh-CN")} 字符` : "连接中"}</b><i /><i /><i /></div>}
     {plan && <details className="conversation-plan"><summary><span><WandSparkles size={13} /> 当前实现计划</span><ChevronDown size={13} /></summary><strong>{plan.summary}</strong><ul>{plan.features.slice(0, 4).map((feature) => <li key={feature}><Check size={11} />{feature}</li>)}</ul></details>}
     {run?.artifacts.length ? <details className="conversation-plan artifact-ledger"><summary><span><Boxes size={13} /> 持久化工件 {run.artifacts.length}</span><ChevronDown size={13} /></summary><ul>{run.artifacts.map((artifact) => <li key={artifact.id}><Check size={11} /><span><b>{artifact.agent}</b> · {artifact.kind}</span><small>{Math.max(1, Math.round(artifact.content.length / 1000))} KB</small></li>)}</ul></details> : null}
+    {run?.error && !busy && <div className="conversation-run-error" role="alert"><CircleAlert size={16} /><div><strong>本轮没有通过质量门</strong><p>{run.error}</p><small>可以直接重试；系统会保留本轮模型调用、代码工件与失败审计，不会切换成预制 Demo。</small></div></div>}
     {quality && !busy && <div className={`conversation-quality ${quality.passed ? "passed" : "failed"}`}><span><ShieldCheck size={14} /> Ray 质量门</span><strong>{quality.score}<small>/100 · {quality.grade} 级</small></strong></div>}
     {run && !busy && <details className={`run-audit-card conversation-audit ${run.status}`}><summary><span><Activity size={13} /> 执行审计</span><b>{runStatusLabel(run.status)}</b></summary><div className="run-metrics"><span><strong>{formatDuration(run.durationMs)}</strong><small>总耗时</small></span><span><strong>{run.usage.totalTokens || "—"}</strong><small>Tokens</small></span><span><strong>{run.modelCalls}</strong><small>模型调用</small></span><span><strong>{run.attempts.length}</strong><small>尝试记录</small></span></div><ol>{run.events.map((event) => <li key={event.id}><i className={event.state} /><div><strong>{event.agent} · {event.title}</strong><small>{event.durationMs === null ? event.phase : `${event.phase} · ${formatDuration(event.durationMs)}`}{event.usage.totalTokens ? ` · ${event.usage.totalTokens} tokens` : ""}</small></div></li>)}</ol>{run.attempts.length > 0 && <div className="model-attempts"><strong>模型调用明细</strong>{run.attempts.map((attempt) => <div key={attempt.id}><span className={attempt.status}>{attempt.status}</span><b>{attempt.agent} · {attempt.model}</b><small>{formatDuration(attempt.durationMs)} · 首字 {attempt.firstTokenMs === null ? "—" : formatDuration(attempt.firstTokenMs)} · {attempt.outputChars.toLocaleString("zh-CN")} 字符 · {attempt.usage.totalTokens || 0} tokens{attempt.error ? ` · ${attempt.error}` : ""}</small></div>)}</div>}{run.candidates.length > 0 && <div className="race-candidates"><strong>Race Mode 候选评分</strong>{run.candidates.map((candidate) => <div className={candidate.selected ? "selected" : ""} key={candidate.id}><span>{candidate.selected ? "WIN" : candidate.score}</span><b>{candidate.stage} · {candidate.model}</b><small>{candidate.score}/100 · {candidate.outputChars.toLocaleString("zh-CN")} 字符</small></div>)}</div>}<footer><code>{run.id.slice(0, 8)}</code><span>{run.mode === "race" ? "Race · " : ""}{run.currentStage} · {run.model}{run.repairCount ? ` · ${run.repairCount} 次修复` : ""}</span></footer></details>}
   </article>;

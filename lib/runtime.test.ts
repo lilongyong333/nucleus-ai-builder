@@ -11,9 +11,17 @@ describe("preview runtime", () => {
     expect(html).toContain("if(!window.__nucleusRuntimeFailed){parent.postMessage");
     expect(html).toContain("queueEvent('info','应用启动完成',{ready:true");
     expect(html).toContain("type:'console'");
+    expect(html).toContain("type:'storage'");
+    expect(html).toContain("Preview storage quota exceeded");
+    expect(html).toContain("Object.keys(memory).length>=200");
     expect(html).toContain("['log','info','warn','error']");
     expect(html).toContain("emitted<200");
     expect(html).toContain("task-form");
+  });
+
+  it("seeds the opaque sandbox localStorage fallback from trusted host state", () => {
+    const html = composePreview(starterFiles, { storage: { tasks: '[{"id":1}]' } });
+    expect(html).toContain('"storage":{"tasks":"[{\\"id\\":1}]"}');
   });
 
   it("neutralizes closing script tags inside generated JavaScript", () => {

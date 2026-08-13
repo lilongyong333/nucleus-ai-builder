@@ -2,7 +2,7 @@
 
 这套文档不是一份“项目介绍”，而是一份可以照着学习、调试、演示、从零复现和继续开发的工程手册。内容以仓库中的真实代码、真实 Git 提交和已上线环境为准。
 
-> **当前验证基线：** `agent/metagpt-quality-gate` 最新版本已完成 351 个 Vitest、283 项固定产品/安全 Eval、17 项专项安全测试、9 个 Chromium E2E、ESLint、TypeScript、Drizzle Migration 和生产构建；并实际完成 1,000 请求/40 并发只读压测，0 失败、P95 2162.62ms。外部 Provider 的“代码就绪”和“账号/资源已配置上线”仍必须分开判断。
+> **当前验证基线：** `agent/metagpt-quality-gate` 最新版本已完成 363 个 Vitest、283 项固定产品/安全 Eval、17 项专项安全测试、11 个 Chromium E2E、ESLint、TypeScript、Drizzle Migration 和生产构建；并实际完成 1,000 请求/40 并发只读压测，0 失败、P95 2162.62ms。外部 Provider 的“代码就绪”和“账号/资源已配置上线”仍必须分开判断。
 
 ## 先看结论
 
@@ -51,7 +51,8 @@ Sites 备用地址：<https://nucleus-ai-builder-root.dreamy-joy-4746.chatgpt.si
 | 18 | [Python 手撕多 Agent](18-python-multi-agent-from-scratch.md) | 不用 LangChain/LangGraph，如何用几个脚本调用云 API 完成写审修复闭环 |
 | 19 | [商业化加固与 Provider 落地](19-commercial-hardening-and-provider-runbook.md) | Provisioner、长期归档、GitHub App、Stripe、Outbox、签名 Runner、安全和压测怎样落地 |
 | 20 | [为什么无限 Token 不能修复生成失败](20-why-unlimited-tokens-do-not-fix-generation.md) | 如何区分 Token、调用、时间和传输故障，并救回完整工件、确定性降级 |
-| 21 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
+| 21 | [引导式需求、实时构建与生产 Eval](21-guided-intake-live-cockpit-and-production-eval.md) | 首页为什么不再二次点击、实时看到什么、沙箱持久化怎样兼顾安全、真实生成到底通过了哪些功能 |
+| 22 | [自定义域名与长期托管](../CUSTOM-DOMAIN-DEPLOYMENT.md) | 为什么选择 Sites 而非 Railway，DNS、证书、验收和回滚如何完成 |
 
 如果你现在只想“照着做出来”，先读 00、13、07、09 和自定义域名文档；如果你想真正理解代码，再按 01–12 顺序阅读。
 
@@ -85,6 +86,7 @@ nucleus/
 │  ├─ parser.ts                        模型输出解析
 │  ├─ quality.ts                       Acorn + 通用/应用类型质量门
 │  ├─ runtime.ts                       iframe 组装、storage shim、启动/错误桥
+│  ├─ preview-storage.ts               严格沙箱 localStorage 宿主桥与配额
 │  ├─ db.ts                            D1 租约、阶段、工件、模型尝试、版本与限流
 │  ├─ database-provisioner.ts           可选物理 D1 创建、迁移、备份和删除
 │  ├─ database-schema.ts                 目标 Schema 摘要与 Provisioner 重试策略
@@ -124,13 +126,14 @@ OPENCODE_GO_CODE_MODEL=glm-5.2
 OPENCODE_GO_CODE_FALLBACK_MODEL=gpt-5.6-luna
 OPENCODE_GO_REQUEST_TIMEOUT_MS=26000
 OPENCODE_GO_FALLBACK_RESERVE_MS=18000
-OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS=34000
-OPENCODE_GO_CODE_FALLBACK_RESERVE_MS=16000
-OPENCODE_GO_MAX_MODEL_CALLS=24
-OPENCODE_GO_MAX_TOTAL_TOKENS=180000
-OPENCODE_GO_STEP_MAX_CALLS=2
-OPENCODE_GO_STEP_MAX_TOTAL_TOKENS=40000
-OPENCODE_GO_STEP_MAX_DURATION_MS=52000
+OPENCODE_GO_CODE_REQUEST_TIMEOUT_MS=175000
+OPENCODE_GO_CODE_FIRST_TOKEN_TIMEOUT_MS=140000
+OPENCODE_GO_CODE_FALLBACK_RESERVE_MS=70000
+OPENCODE_GO_MAX_MODEL_CALLS=60
+OPENCODE_GO_MAX_TOTAL_TOKENS=500000
+OPENCODE_GO_STEP_MAX_CALLS=4
+OPENCODE_GO_STEP_MAX_TOTAL_TOKENS=100000
+OPENCODE_GO_STEP_MAX_DURATION_MS=280000
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -155,4 +158,4 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 - 复杂看板：21 秒、6,293 Tokens、1 次模型调用、11 事件、Ray 100/A；
 - 首页四个固定成品链接均返回 200；
 - Sign in with ChatGPT 后，账号中心展示项目、版本、对话、工作台链接和公开成品链接；
-- 当前本地发布门为 `pnpm test` 351/351、`pnpm eval:product` 283/283、`pnpm test:security` 17/17、`pnpm test:e2e` 9/9、TypeScript、ESLint、Drizzle `0009` Migration 和生产构建全部通过；1,000 请求/40 并发只读压测为 0 失败、P95 2162.62ms。固定 Eval 不等价于任意 Prompt 的统计成功率，多 Cookie 真实账号压测仍应在隔离 staging 执行。
+- 当前本地发布门为 `pnpm test` 363/363、`pnpm eval:product` 283/283、`pnpm test:security` 17/17、`pnpm test:e2e` 11/11、TypeScript、ESLint、Drizzle `0010` Migration 和生产构建全部通过；1,000 请求/40 并发只读压测为 0 失败、P95 2162.62ms。固定 Eval 不等价于任意 Prompt 的统计成功率，多 Cookie 真实账号压测仍应在隔离 staging 执行。
