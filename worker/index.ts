@@ -4,6 +4,7 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  NUCLEUS_MAINTENANCE_TOKEN?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -32,6 +33,15 @@ const worker = {
       }, allowedWidths);
     }
     return handler.fetch(request, env, ctx);
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.NUCLEUS_MAINTENANCE_TOKEN) return;
+    ctx.waitUntil(handler.fetch(new Request("https://nucleus.internal/api/maintenance/run", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.NUCLEUS_MAINTENANCE_TOKEN}` },
+    }), env, ctx).then(async (response) => {
+      if (!response.ok) throw new Error(`Nucleus maintenance returned ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    }));
   },
 };
 

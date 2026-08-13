@@ -6,5 +6,5 @@ export default async function PublishedPage({ params }: { params: Promise<{ slug
   const { slug } = await params;
   const project = await getPublishedProject(slug);
   if (!project) notFound();
-  return <PublishedPreview files={project.files} title={project.title} />;
+  return <PublishedPreview files={project.files} title={project.title} slug={slug} projectId={project.id} versionId={project.currentVersionId} />;
 }

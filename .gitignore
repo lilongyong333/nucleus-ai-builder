@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
 
 # next.js
 /.next/
@@ -55,6 +57,7 @@ next-env.d.ts
 
 # 笔试原题与任何私有材料 —— 题目明确要求不得对外传播
 *.pdf
+!/output/pdf/Nucleus-ROOT-Fullstack-Written-Test-Li-Longyong.pdf
 /private/
 
 # 运行期产物（预览截图、导出的 ZIP 等）

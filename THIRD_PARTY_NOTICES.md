@@ -15,6 +15,26 @@
 - 把 `error` / `unhandledrejection` 通过 `postMessage` 交回工作台；
 - 为 opaque-origin iframe 提供内存版 `localStorage` 兼容层。
 
+## MetaGPT
+
+- 上游仓库：https://github.com/FoundationAgents/MetaGPT
+- 审阅基线：`11cdf466d042aece04fc6cfd13b28e1a70341b1f`
+- 许可证：MIT
+
+本轮审阅了 MetaGPT 的 Role、Action、Message、Environment、Team、QA 循环与测试组织。Nucleus 借鉴“独立质量角色产生结构化检查工件并进入有限修复循环”的工程思想，使用 TypeScript 按三文件 Worker 运行时独立实现，没有复制 MetaGPT Python 源码。
+
+## Acorn
+
+- 上游项目：https://github.com/acornjs/acorn
+- 使用版本：`8.15.0`
+- 许可证：MIT
+
+用于在 Cloudflare Worker 中对模型生成的 JavaScript 做静态 ECMAScript 语法解析，不执行生成代码。
+
 ## npm 依赖
 
-React、Vinext、Drizzle ORM、JSZip、Lucide 和 Vitest 等依赖通过 `package.json` 与 `pnpm-lock.yaml` 锁定，按各自许可证使用，未复制其源码到本仓库。
+React、Vinext、Drizzle ORM、JSZip、Lucide、Acorn 和 Vitest 等依赖通过 `package.json` 与 `pnpm-lock.yaml` 锁定，按各自许可证使用，未复制其源码到本仓库。
+
+## 商业产品官方文档研究
+
+为建立能力上限矩阵，阅读了 MGX、Lovable、Bolt、Replit Agent 和 v0 的官方公开产品文档。只比较了浏览器测试、数据库/Auth、版本检查点、Git 工作流、部署和可视化编辑等产品能力，没有复制这些闭源产品的源码、提示词、商标素材或界面。来源链接集中记录在 `docs/UPPER-BOUND-BENCHMARK.md`。

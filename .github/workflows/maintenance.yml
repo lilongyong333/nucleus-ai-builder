@@ -1,0 +1,30 @@
+name: Production maintenance
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nucleus-production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run signed maintenance endpoint
+        env:
+          NUCLEUS_MAINTENANCE_URL: ${{ secrets.NUCLEUS_MAINTENANCE_URL }}
+          NUCLEUS_MAINTENANCE_TOKEN: ${{ secrets.NUCLEUS_MAINTENANCE_TOKEN }}
+        run: |
+          test -n "$NUCLEUS_MAINTENANCE_URL"
+          test -n "$NUCLEUS_MAINTENANCE_TOKEN"
+          curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors --max-time 180 \
+            -X POST \
+            -H "Authorization: Bearer $NUCLEUS_MAINTENANCE_TOKEN" \
+            "$NUCLEUS_MAINTENANCE_URL/api/maintenance/run"

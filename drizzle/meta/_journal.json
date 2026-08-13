@@ -15,6 +15,69 @@
       "when": 1786209947473,
       "tag": "0001_dapper_champions",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786235762253,
+      "tag": "0002_hot_whizzer",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786237064305,
+      "tag": "0003_concerned_aaron_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786237244103,
+      "tag": "0004_motionless_menace",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786240146116,
+      "tag": "0005_fuzzy_phantom_reporter",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786290823244,
+      "tag": "0006_familiar_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786311159749,
+      "tag": "0007_robust_gravity",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786325516388,
+      "tag": "0008_lying_lenny_balinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786540884614,
+      "tag": "0009_harsh_bloodstorm",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786596049447,
+      "tag": "0010_real_gambit",
+      "breakpoints": true
     }
   ]
 }

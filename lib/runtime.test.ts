@@ -7,7 +7,21 @@ describe("preview runtime", () => {
     expect(html).toContain("<style>");
     expect(html).toContain("<script>");
     expect(html).toContain("__nucleus_probe__");
+    expect(html).toContain("type:'ready'");
+    expect(html).toContain("if(!window.__nucleusRuntimeFailed){parent.postMessage");
+    expect(html).toContain("queueEvent('info','应用启动完成',{ready:true");
+    expect(html).toContain("type:'console'");
+    expect(html).toContain("type:'storage'");
+    expect(html).toContain("Preview storage quota exceeded");
+    expect(html).toContain("Object.keys(memory).length>=200");
+    expect(html).toContain("['log','info','warn','error']");
+    expect(html).toContain("emitted<200");
     expect(html).toContain("task-form");
+  });
+
+  it("seeds the opaque sandbox localStorage fallback from trusted host state", () => {
+    const html = composePreview(starterFiles, { storage: { tasks: '[{"id":1}]' } });
+    expect(html).toContain('"storage":{"tasks":"[{\\"id\\":1}]"}');
   });
 
   it("neutralizes closing script tags inside generated JavaScript", () => {
@@ -15,7 +29,31 @@ describe("preview runtime", () => {
     expect(html).toContain("<\\/script>");
   });
 
+  it("preserves dollar-based selector helpers when composing the final document", () => {
+    const source = "const $ = (s) => document.querySelector(s); const $$ = (s) => document.querySelectorAll(s); const marker = '$&';";
+    const html = composePreview({ ...starterFiles, "script.js": source });
+    expect(html).toContain("const $ = (s)");
+    expect(html).toContain("const $$ = (s)");
+    expect(html).toContain("const marker = '$&'");
+  });
+
   it("rejects incomplete model output", () => {
     expect(() => normalizeGeneratedFiles({ "index.html": "<main />" })).toThrow("styles.css");
+  });
+
+  it("injects the authenticated per-app data SDK and visual element picker", () => {
+    const html = composePreview(starterFiles, {
+      projectId: "project-123",
+      versionId: "version-456",
+      token: "runtime-token",
+      actor: { id: "actor-1", type: "account", role: "editor", displayName: "Editor" },
+    });
+    expect(html).toContain('/api/app-runtime/project-123');
+    expect(html).toContain("Authorization':'Bearer '");
+    expect(html).toContain("window.nucleus={");
+    expect(html).toContain("create:async function(collection,value)");
+    expect(html).toContain("type:'element-selected'");
+    expect(html).toContain("data.type==='visual-patch'");
+    expect(html).toContain("data-nucleus-overlay");
   });
 });

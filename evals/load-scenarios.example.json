@@ -1,0 +1,14 @@
+[
+  {
+    "name": "landing-page",
+    "method": "GET",
+    "path": "/",
+    "expectedStatuses": [200]
+  },
+  {
+    "name": "session-read",
+    "method": "GET",
+    "path": "/api/session",
+    "expectedStatuses": [200, 401]
+  }
+]
